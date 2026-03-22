@@ -1,0 +1,42 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(/c/Users/benss/.conda/envs/p312/python.exe -c \"import fastapi; print\\(''fastapi OK''\\)\")",
+      "Bash(/c/Users/benss/.conda/envs/p312/python.exe -c \"import redis; print\\(''redis OK''\\)\")",
+      "Bash(/c/Users/benss/.conda/envs/p312/python.exe -c \"import numpy; print\\(''numpy OK''\\)\")",
+      "Bash(/c/Users/benss/.conda/envs/p312/python.exe --version)",
+      "Bash(/c/Users/benss/.conda/envs/p312/python.exe -c \"import uvicorn\")",
+      "Bash(/c/Users/benss/.conda/envs/p312/python.exe -c \"import polars\")",
+      "Bash(/c/Users/benss/.conda/envs/p312/python.exe -c \"import plotly\")",
+      "Bash(/c/Users/benss/.conda/envs/p312/python.exe -c \"import ulid\")",
+      "Bash(/c/Users/benss/.conda/envs/p312/python.exe -c \"import mmh3\")",
+      "Bash(/c/Users/benss/.conda/envs/p312/python.exe -c \"import uvicorn; print\\(''uvicorn OK''\\)\")",
+      "Bash(/c/Users/benss/.conda/envs/p312/python.exe -c \"import polars; print\\(''polars OK''\\); import plotly; print\\(''plotly OK''\\); import ulid; print\\(''ulid OK''\\); import scipy; print\\(''scipy OK''\\)\")",
+      "Bash(/c/Users/benss/.conda/envs/p312/python.exe -c \"import ipycytoscape; print\\(''ipycytoscape OK''\\); import mmh3; print\\(''mmh3 OK''\\); import bitarray; print\\(''bitarray OK''\\)\")",
+      "Bash(conda run:*)",
+      "Bash(C:/Users/benss/.conda/envs/p312/python.exe -m pip install pytest httpx)",
+      "Bash(C:/Users/benss/.conda/envs/p312/python.exe -m pytest tests/ -v)",
+      "Bash(C:/Users/benss/.conda/envs/p312/python.exe -m pip install clickhouse-connect pydantic-settings)",
+      "Bash(C:/Users/benss/.conda/envs/p312/python.exe -c \"import redis; print\\(redis.__version__\\); from redis.commands.search import field; print\\(dir\\(field\\)\\)\")",
+      "Bash(C:/Users/benss/.conda/envs/p312/python.exe -c \"from redis.commands.search.indexDefinition import IndexDefinition, IndexType\")",
+      "Bash(C:/Users/benss/.conda/envs/p312/python.exe -c \"from redis.commands.search.index_definition import IndexDefinition, IndexType; print\\(''ok''\\)\")",
+      "Bash(python -m pytest --co -q)",
+      "Bash(C:/Users/benss/.conda/envs/p312/python.exe -m pytest --co -q)",
+      "Bash(curl -s \"http://localhost:8123/\" --data-binary \"SELECT database, table, partition, rows, active FROM system.parts WHERE database=''argus''\")",
+      "Bash(curl -s \"http://localhost:8123/\" --data-binary \"SELECT rows, active FROM system.parts WHERE database=''argus'' AND rows > 0 LIMIT 5\")",
+      "Bash(taskkill //F //FI \"WINDOWTITLE eq *uvicorn*\")",
+      "Bash(pkill -f \"uvicorn main:app\")",
+      "Bash(pkill -f \"generate_events\")",
+      "Bash(C:/Users/benss/.conda/envs/p312/python.exe scripts/cleanup_events.py)",
+      "Bash(C:/Users/benss/.conda/envs/p312/python.exe scripts/generate_events.py:*)",
+      "Bash(C:/Users/benss/.conda/envs/p312/python.exe main.py:*)",
+      "Bash(C:/Users/benss/.conda/envs/p312/python.exe -m uvicorn:*)",
+      "Bash(curl:*)",
+      "Bash(C:/Users/benss/.conda/envs/p312/python.exe -m pytest tests/test_chains.py -v)",
+      "Bash(C:Usersbenss.condaenvsp312python.exe -m pytest tests/ -v)",
+      "Bash(/c/Users/benss/.conda/envs/p312/python.exe -m pytest tests/ -v)",
+      "Bash(/c/Users/benss/.conda/envs/p312/python.exe -m pytest tests/ -q)",
+      "Bash(/c/Users/benss/.conda/envs/p312/python.exe -m pytest tests/ --no-header -q)"
+    ]
+  }
+}

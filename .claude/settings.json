@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(curl -s \"http://localhost:8123/\" --data-binary \"SELECT count\\(\\) as rows, countDistinct\\(event_name\\) as distinct_events, min\\(timestamp\\) as earliest, max\\(timestamp\\) as latest FROM argus.events FORMAT PrettyCompact\")",
+      "Bash(curl -s \"http://localhost:8123/\" --data-binary \"SELECT event_name, count\\(\\) as cnt FROM argus.events GROUP BY event_name ORDER BY event_name FORMAT PrettyCompact\")",
+      "Bash(redis-cli DBSIZE)",
+      "Bash(docker exec:*)",
+      "Bash(python3:*)"
+    ]
+  }
+}
