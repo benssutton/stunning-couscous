@@ -5,7 +5,23 @@
       "Bash(curl -s \"http://localhost:8123/\" --data-binary \"SELECT event_name, count\\(\\) as cnt FROM argus.events GROUP BY event_name ORDER BY event_name FORMAT PrettyCompact\")",
       "Bash(redis-cli DBSIZE)",
       "Bash(docker exec:*)",
-      "Bash(python3:*)"
+      "Bash(python3:*)",
+      "Bash(/c/Users/benss/.conda/envs/p312/python.exe -m pytest --collect-only)",
+      "Bash(python -m pytest --collect-only)",
+      "Bash(/c/Users/Ben/.conda/envs/p312/python.exe -m pytest --collect-only)",
+      "Bash(/c/Users/Ben/.conda/envs/p312/python.exe -c \"import fastapi, redis, clickhouse_connect, httpx, ulid, pydantic, numpy, pandas, polars, scipy, sklearn, joblib, pytest\")",
+      "Bash(/c/Users/Ben/.conda/envs/p312/python.exe -m pip install \"testcontainers[redis,clickhouse]\")",
+      "Bash(python -c \"import ulid; print\\(ulid.__version__\\); print\\(dir\\(ulid\\)\\)\")",
+      "Bash(/c/Users/Ben/.conda/envs/p312/python -c \"import ulid; print\\(ulid.__version__\\); print\\([x for x in dir\\(ulid\\) if not x.startswith\\(''_''\\)]\\)\")",
+      "Bash(/c/Users/Ben/.conda/envs/p312/python -c \"import ulid; u = ulid.new\\(\\); print\\(u\\); print\\(str\\(u\\)\\)\")",
+      "Bash(python -m pytest tests/test_classifier.py -v)",
+      "Bash(C:Usersbenss.condaenvsp312python.exe -m pytest tests/test_classifier.py -v)",
+      "Bash(/c/Users/benss/.conda/envs/p312/python.exe -m pytest tests/test_classifier.py -v)",
+      "Read(//c/Users/benss/.conda/envs/**)",
+      "Bash(echo $PATH)",
+      "Bash(/c/Users/Ben/.conda/envs/p312/python.exe -m pytest tests/test_classifier.py -v)",
+      "Bash(/c/Users/Ben/.conda/envs/p312/python.exe -m pytest tests/test_endpoints.py -v)",
+      "Bash(/c/Users/Ben/.conda/envs/p312/python.exe -c \"import pytest_asyncio; print\\(pytest_asyncio.__version__\\)\")"
     ]
   }
 }

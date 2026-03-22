@@ -10,7 +10,7 @@ from services.chain_classifier import (
     TreeClassifier,
 )
 from services.inference import Edge
-from services.models import PathProfile
+from schemas.models import PathProfile
 
 
 # ---------------------------------------------------------------------------

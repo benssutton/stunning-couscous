@@ -38,21 +38,6 @@ class InferenceMethod(Protocol):
     ) -> list[Edge]: ...
 
 
-def _pearson_p_value(r: float, n: int) -> float:
-    """One-tailed p-value for Pearson r (alternative='greater').
-
-    Uses the t-distribution transformation:
-        t = r * sqrt((n-2) / (1 - r^2))
-    matching scipy.stats.pearsonr(alternative="greater").
-    """
-    if n <= 2:
-        return 1.0
-    if abs(r) >= 1.0:
-        return 0.0
-    t_stat = r * math.sqrt((n - 2) / (1 - r * r))
-    return 1.0 - t_dist.cdf(t_stat, df=n - 2)
-
-
 class PearsonInference:
     """Pearson correlation-based dependency inference.
 
@@ -105,7 +90,7 @@ class PearsonInference:
                 if r is None or math.isnan(r):
                     continue
 
-                p = _pearson_p_value(r, n)
+                p = self._pearson_p_value(r, n)
                 if p < max_pval:
                     corr[e_idx][d_idx] = r
                     pvals[e_idx][d_idx] = p
@@ -139,3 +124,19 @@ class PearsonInference:
             ))
 
         return edges
+
+    @staticmethod
+    def _pearson_p_value(r: float, n: int) -> float:
+        """One-tailed p-value for Pearson r (alternative='greater').
+
+        Uses the t-distribution transformation:
+            t = r * sqrt((n-2) / (1 - r^2))
+        matching scipy.stats.pearsonr(alternative="greater").
+        """
+        if n <= 2:
+            return 1.0
+        if abs(r) >= 1.0:
+            return 0.0
+        t_stat = r * math.sqrt((n - 2) / (1 - r * r))
+        return 1.0 - t_dist.cdf(t_stat, df=n - 2)
+

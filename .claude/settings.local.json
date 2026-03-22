@@ -36,7 +36,13 @@
       "Bash(C:Usersbenss.condaenvsp312python.exe -m pytest tests/ -v)",
       "Bash(/c/Users/benss/.conda/envs/p312/python.exe -m pytest tests/ -v)",
       "Bash(/c/Users/benss/.conda/envs/p312/python.exe -m pytest tests/ -q)",
-      "Bash(/c/Users/benss/.conda/envs/p312/python.exe -m pytest tests/ --no-header -q)"
+      "Bash(/c/Users/benss/.conda/envs/p312/python.exe -m pytest tests/ --no-header -q)",
+      "Bash(/c/Users/Ben/.conda/envs/p312/python -m pytest tests/ -v --tb=short)",
+      "Bash(\"C:\\\\Users\\\\Ben\\\\.conda\\\\envs\\\\p312\\\\python.exe\" -m pytest tests/test_endpoints.py::test_adjacency_pipeline -v --tb=short --no-header)",
+      "Bash(\"C:\\\\Users\\\\Ben\\\\.conda\\\\envs\\\\p312\\\\python.exe\" -m pytest tests/test_endpoints.py::test_adjacency_pipeline -v --tb=long --no-header)",
+      "Bash(\"C:\\\\Users\\\\Ben\\\\.conda\\\\envs\\\\p312\\\\python.exe\" -m pytest tests/ -v --tb=short --no-header)",
+      "Bash(conda activate:*)",
+      "Bash(C:/Users/Ben/.conda/envs/p312/python.exe -m pytest tests/test_classifier.py -v)"
     ]
   }
 }

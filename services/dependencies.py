@@ -2,12 +2,12 @@ import logging
 from contextlib import asynccontextmanager
 
 import clickhouse_connect
-import redis
+import redis.asyncio as aioredis
 from pydantic_settings import BaseSettings
 
 from services.adjacency_service import AdjacencyService
 from services.chain_classifier import ChainProfilePredictor
-from services.clickhouse_service import ClickHouseService
+from services.clickhouse_service import ClickHouseBatchWriter, ClickHouseService
 from services.redis_service import RedisService
 
 logger = logging.getLogger(__name__)
@@ -19,6 +19,7 @@ class Settings(BaseSettings):
     clickhouse_host: str = "localhost"
     clickhouse_port: int = 8123
     clickhouse_database: str = "argus"
+    clickhouse_password: str = "clickhouse"
 
 
 settings = Settings()
@@ -27,29 +28,37 @@ settings = Settings()
 _redis_service: RedisService | None = None
 _clickhouse_service: ClickHouseService | None = None
 _adjacency_service: AdjacencyService | None = None
-_redis_pool: redis.ConnectionPool | None = None
+_batch_writer: ClickHouseBatchWriter | None = None
+_redis_pool: aioredis.ConnectionPool | None = None
 _clickhouse_client = None
 
 
 @asynccontextmanager
 async def lifespan(app):
     """FastAPI lifespan: create connections on startup, close on shutdown."""
-    global _redis_service, _clickhouse_service, _adjacency_service, _redis_pool, _clickhouse_client
+    global _redis_service, _clickhouse_service, _adjacency_service, _batch_writer, _redis_pool, _clickhouse_client
 
     # Redis
-    _redis_pool = redis.ConnectionPool(
+    _redis_pool = aioredis.BlockingConnectionPool(
         host=settings.redis_host,
         port=settings.redis_port,
         decode_responses=True,
+        max_connections=50,
+        timeout=5,
     )
     _redis_service = RedisService(_redis_pool)
-    _redis_service.ensure_index()
+    await _redis_service.ensure_index()
     logger.info("Redis connected and index ensured")
 
     # ClickHouse
     _clickhouse_client = clickhouse_connect.get_client(
         host=settings.clickhouse_host,
         port=settings.clickhouse_port,
+        password=settings.clickhouse_password,
+        settings={
+            "async_insert": 1,
+            "wait_for_async_insert": 0,
+        },
     )
     _clickhouse_service = ClickHouseService(
         _clickhouse_client, settings.clickhouse_database
@@ -59,6 +68,16 @@ async def lifespan(app):
     _clickhouse_service.ensure_profiles_table()
     _clickhouse_service.ensure_classifier_model_table()
     logger.info("ClickHouse connected and tables ensured")
+
+    # Batch writer for event inserts
+    _batch_writer = ClickHouseBatchWriter(
+        _clickhouse_client,
+        f"{settings.clickhouse_database}.events",
+        max_batch_size=500,
+        flush_interval_s=0.1,
+    )
+    await _batch_writer.start()
+    logger.info("ClickHouse batch writer started")
 
     # Load persisted path profiles into RedisService
     profiles = _clickhouse_service.query_path_profiles()
@@ -79,8 +98,10 @@ async def lifespan(app):
     yield
 
     # Shutdown
+    if _batch_writer:
+        await _batch_writer.stop()
     if _redis_pool:
-        _redis_pool.disconnect()
+        await _redis_pool.aclose()
     if _clickhouse_client:
         _clickhouse_client.close()
 
@@ -93,6 +114,11 @@ def get_redis_service() -> RedisService:
 def get_clickhouse_service() -> ClickHouseService:
     assert _clickhouse_service is not None, "ClickHouse service not initialized"
     return _clickhouse_service
+
+
+def get_batch_writer() -> ClickHouseBatchWriter:
+    assert _batch_writer is not None, "Batch writer not initialized"
+    return _batch_writer
 
 
 def get_adjacency_service() -> AdjacencyService:

@@ -2,44 +2,174 @@ from __future__ import annotations
 
 import json
 import logging
-from io import StringIO
 from typing import TYPE_CHECKING
 
-import redis
+import redis.asyncio as aioredis
 import ulid
 from redis.commands.search.field import TagField
 from redis.commands.search.index_definition import IndexDefinition, IndexType
 
-from services.models import Event, PathProfile
+from schemas.models import Event, PathProfile
 
 if TYPE_CHECKING:
     from services.chain_classifier import ChainProfilePredictor
 
 logger = logging.getLogger(__name__)
 
+# ---------------------------------------------------------------------------
+# Lua script: atomic FT.SEARCH + chain create/merge in one round-trip.
+#
+# Returns a 4-element array:
+#   [status, chain_id, all_events_json, chain_json]
+#
+# status values:
+#   "CREATED"     – new chain was created (no prior match)
+#   "MERGED"      – event merged into an existing chain (common path)
+#   "CONFLICT"    – ref-type conflict detected; timestamps merged but
+#                   Python must handle the duplicate-chain creation
+#   "MULTI_MATCH" – more than one chain matched; Python must handle
+# ---------------------------------------------------------------------------
+_LUA_CHAIN_MERGE = """
+local new_key  = KEYS[1]
+local idx      = ARGV[1]
+local query    = ARGV[2]
+local ts_json  = ARGV[3]
+local ctx_json = ARGV[4]
+local stream   = ARGV[5]
+local ttl      = tonumber(ARGV[6])
+local maxlen   = ARGV[7]
+
+local refs = {}
+for i = 8, #ARGV do
+    refs[#refs + 1] = ARGV[i]
+end
+
+-- 1. Search --
+local raw = redis.call('FT.SEARCH', idx, query, 'LIMIT', '0', '10')
+local total = tonumber(raw[1])
+
+if total == 0 then
+    local chain = cjson.encode({
+        concatenatedrefs = refs,
+        timestamps       = cjson.decode(ts_json),
+        context          = cjson.decode(ctx_json),
+        complete         = false,
+        terminated       = false,
+    })
+    redis.call('JSON.SET', new_key, '$', chain)
+    redis.call('EXPIRE', new_key, ttl)
+    redis.call('XADD', stream, 'MAXLEN', '~', maxlen, '*', 'ecid', new_key)
+    local evts = {}
+    for k in pairs(cjson.decode(ts_json)) do evts[#evts + 1] = k end
+    return {'CREATED', new_key, cjson.encode(evts), '{}'}
+end
+
+if total > 1 then
+    return {'MULTI_MATCH', tostring(total), '', ''}
+end
+
+-- 2. Single match -> merge --
+local chain_key = raw[2]
+local fields = raw[3]
+local doc_str = nil
+for i = 1, #fields, 2 do
+    if fields[i] == '$' then
+        doc_str = fields[i + 1]
+        break
+    end
+end
+if not doc_str then
+    doc_str = redis.call('JSON.GET', chain_key, '$')
+end
+
+local chain
+if type(doc_str) == 'string' and string.sub(doc_str, 1, 1) == '[' then
+    chain = cjson.decode(doc_str)[1]
+else
+    chain = cjson.decode(doc_str)
+end
+
+local refs_on = chain.concatenatedrefs or {}
+local evt_ts  = cjson.decode(ts_json)
+
+local on_set = {}
+for _, r in ipairs(refs_on) do on_set[r] = true end
+local not_found = {}
+for _, r in ipairs(refs) do
+    if not on_set[r] then not_found[#not_found + 1] = r end
+end
+
+if #not_found == 0 then
+    redis.call('JSON.MERGE', chain_key, '$.timestamps', ts_json)
+    redis.call('JSON.MERGE', chain_key, '$.context', ctx_json)
+else
+    local types_on = {}
+    for _, r in ipairs(refs_on) do
+        types_on[r:match('^([^_]+)')] = true
+    end
+    local conflict = false
+    for _, r in ipairs(not_found) do
+        if types_on[r:match('^([^_]+)')] then
+            conflict = true
+            break
+        end
+    end
+
+    if conflict then
+        redis.call('JSON.MERGE', chain_key, '$.timestamps', ts_json)
+        redis.call('JSON.MERGE', chain_key, '$.context', ctx_json)
+        redis.call('EXPIRE', chain_key, ttl)
+        local evts = {}
+        for k in pairs(chain.timestamps or {}) do evts[#evts + 1] = k end
+        for k in pairs(evt_ts) do evts[#evts + 1] = k end
+        return {'CONFLICT', chain_key, cjson.encode(evts), cjson.encode(chain)}
+    end
+
+    redis.call('JSON.MERGE', chain_key, '$.timestamps', ts_json)
+    redis.call('JSON.MERGE', chain_key, '$.context', ctx_json)
+    for _, ref in ipairs(not_found) do
+        redis.call('JSON.ARRAPPEND', chain_key,
+                    '$.concatenatedrefs', '"' .. ref .. '"')
+    end
+end
+
+redis.call('EXPIRE', chain_key, ttl)
+redis.call('XADD', stream, 'MAXLEN', '~', maxlen, '*', 'ecid', chain_key)
+
+local all_evts = {}
+for k in pairs(chain.timestamps or {}) do all_evts[#all_evts + 1] = k end
+for k in pairs(evt_ts) do all_evts[#all_evts + 1] = k end
+return {'MERGED', chain_key, cjson.encode(all_evts), cjson.encode(chain)}
+"""
+
 
 class RedisService:
     INDEX_NAME = "argus:ec:idx"
     KEY_BASE = "argus:ec"
     STREAM_NAME = "argus:ecstream"
+    CHAIN_TTL_SECONDS = 600  # 10-minute TTL for stale chain protection
 
-    def __init__(self, pool: redis.ConnectionPool):
-        self.r = redis.Redis(connection_pool=pool)
+    def __init__(self, pool: aioredis.ConnectionPool):
+        self.r = aioredis.Redis(connection_pool=pool)
         self.expected_events: set[str] = set()
         self.path_profiles: list[PathProfile] = []
         self._predictor: ChainProfilePredictor | None = None
+        self._merge_script = self.r.register_script(_LUA_CHAIN_MERGE)
 
     def _create_key(self) -> str:
-        return f"{self.KEY_BASE}:{ulid.ULID()}"
+        return f"{self.KEY_BASE}:{ulid.new()}"
 
-    def ensure_index(self) -> None:
+    async def ensure_index(self) -> None:
         """Create the RediSearch index if it does not already exist."""
         try:
-            self.r.ft(self.INDEX_NAME).info()
-        except redis.ResponseError:
-            self.r.ft(self.INDEX_NAME).create_index(
+            await self.r.ft(self.INDEX_NAME).info()
+        except aioredis.ResponseError:
+            await self.r.ft(self.INDEX_NAME).create_index(
                 [
-                    TagField("$.concatenatedrefs[*]", as_name="concatenatedrefs"),
+                    TagField(
+                        "$.concatenatedrefs[*]",
+                        as_name="concatenatedrefs",
+                    ),
                     TagField("$.complete", as_name="complete"),
                     TagField("$.terminated", as_name="terminated"),
                 ],
@@ -61,98 +191,238 @@ class RedisService:
         """Set the fitted classifier for runtime profile prediction."""
         self._predictor = predictor
 
-    def add_or_merge_event(self, event: Event) -> str:
-        """Process an incoming event into the event chain assembly.
+    async def add_or_merge_event(self, event: Event) -> str:
+        """Atomically search-and-merge an event into the chain assembly.
 
-        Searches for existing non-terminated chains matching any of the event's
-        refs.  Creates a new chain or merges into existing chain(s) as
-        appropriate.  Returns the chain_id that was created or updated.
+        Uses a Lua script for the common cases (create / single-match merge)
+        to guarantee atomicity in a single Redis round-trip.  Falls back to
+        a Python pipeline for multi-match and ref-conflict edge cases.
         """
         concat_refs = [
             f"{ref.type}_{ref.id}_{ref.ver}" for ref in event.Refs
         ]
-
-        # Search for existing non-terminated chains with matching refs
         query = (
             "@concatenatedrefs:{"
             + "|".join(concat_refs)
             + "} @terminated:{false}"
         )
-        results = self.r.ft(self.INDEX_NAME).search(query)
-
         event_timestamp = {event.EventName: event.Timestamp}
         context = event.Context
 
-        if len(results.docs) == 0:
-            return self._create_new_chain(concat_refs, event_timestamp, context)
+        new_key = self._create_key()
+        result = await self._merge_script(
+            keys=[new_key],
+            args=[
+                self.INDEX_NAME,
+                query,
+                json.dumps(event_timestamp),
+                json.dumps(context),
+                self.STREAM_NAME,
+                str(self.CHAIN_TTL_SECONDS),
+                "1000000",
+                *concat_refs,
+            ],
+        )
 
-        # Merge with existing chain(s)
-        # Warn on multi-chain merge (notebook TODO — deferred)
-        if len(results.docs) > 1:
-            logger.warning(
-                "Event matched %d chains — multi-chain merge not yet implemented, "
-                "processing each independently",
-                len(results.docs),
+        status = result[0]
+        if isinstance(status, bytes):
+            status = status.decode()
+        chain_id = result[1]
+        if isinstance(chain_id, bytes):
+            chain_id = chain_id.decode()
+        events_json = result[2]
+        if isinstance(events_json, bytes):
+            events_json = events_json.decode()
+        chain_json_str = result[3]
+        if isinstance(chain_json_str, bytes):
+            chain_json_str = chain_json_str.decode()
+
+        if status == "MULTI_MATCH":
+            return await self._fallback_pipeline(
+                concat_refs, event_timestamp, context
             )
+
+        if status == "CONFLICT":
+            # Timestamps already merged by Lua; handle duplicate chain
+            chain_json = json.loads(chain_json_str)
+            await self._handle_conflict(
+                chain_id, chain_json, concat_refs, event_timestamp
+            )
+
+        # Termination check
+        all_events = set(json.loads(events_json)) if events_json else set()
+        if all_events:
+            should_delete = self._should_terminate(all_events)
+            if should_delete:
+                await self.r.delete(chain_id)
+
+        return chain_id
+
+    def _should_terminate(self, all_events: set[str]) -> bool:
+        """Pure check — returns True if the chain should be deleted.
+
+        Uses exact node_set matching: the chain is terminated only when
+        its event set exactly equals a known profile's node_set.  This
+        avoids both premature termination (predicting the wrong profile
+        on an incomplete chain) and over-conservatism (refusing to
+        terminate when a superset profile exists).
+        """
+        profiles = (
+            list(self._predictor.profiles.values())
+            if self._predictor is not None
+            else self.path_profiles
+        )
+
+        if profiles:
+            return any(
+                p.terminal_nodes and all_events == p.node_set
+                for p in profiles
+            )
+
+        if self.expected_events:
+            if not (self.expected_events - all_events):
+                return True
+
+        return False
+
+    async def _handle_conflict(
+        self,
+        chain_id: str,
+        chain_json: dict,
+        concat_refs: list[str],
+        event_timestamp: dict,
+    ) -> None:
+        """Create the duplicate chain for ref-type conflicts."""
+        refs_on_chain = chain_json["concatenatedrefs"]
+        refs_not_found = set(concat_refs) - set(refs_on_chain)
+        types_on_chain = {r.split("_")[0] for r in refs_on_chain}
+        types_not_found = {r.split("_")[0] for r in refs_not_found}
+        types_in_conflict = types_on_chain & types_not_found
+
+        refs_in_conflict = [
+            r for r in refs_not_found
+            if r.split("_")[0] in types_in_conflict
+        ]
+        refs_minus_conflicts = [
+            r for r in refs_on_chain
+            if r.split("_")[0] not in types_in_conflict
+        ]
+        refs_not_in_conflict = [
+            r for r in refs_not_found
+            if r.split("_")[0] not in types_in_conflict
+        ]
+
+        p = self.r.pipeline()
+
+        # Append non-conflicting new refs to existing chain
+        for r in refs_not_in_conflict:
+            p.json().arrappend(chain_id, "$.concatenatedrefs", r)
+
+        # Create duplicate chain with conflicting refs
+        dup = dict(chain_json)
+        dup["concatenatedrefs"] = refs_minus_conflicts + refs_in_conflict
+        dup["timestamps"] = {
+            **chain_json["timestamps"],
+            **event_timestamp,
+        }
+        dup_key = self._create_key()
+        p.json().set(dup_key, "$", dup)
+        p.expire(dup_key, self.CHAIN_TTL_SECONDS)
+
+        await p.execute()
+
+    async def _fallback_pipeline(
+        self,
+        concat_refs: list[str],
+        event_timestamp: dict,
+        context: dict,
+    ) -> str:
+        """Pipeline-based merge for multi-chain matches (rare)."""
+        query = (
+            "@concatenatedrefs:{"
+            + "|".join(concat_refs)
+            + "} @terminated:{false}"
+        )
+        results = await self.r.ft(self.INDEX_NAME).search(query)
+
+        if len(results.docs) == 0:
+            return await self._create_new_chain(
+                concat_refs, event_timestamp, context
+            )
+
+        logger.warning(
+            "Fallback pipeline: event matched %d chains",
+            len(results.docs),
+        )
 
         chain_id = None
         p = self.r.pipeline()
 
         for result in results.docs:
-            chain_json = json.load(StringIO(result.json))
+            chain_json = json.loads(result.json)
             refs_on_chain = chain_json["concatenatedrefs"]
             events_on_chain = set(chain_json["timestamps"].keys())
             chain_id_this = result.id
             refs_not_found = set(concat_refs) - set(refs_on_chain)
 
             if len(refs_not_found) == 0:
-                # All refs already present — just add event timestamp and context
-                p.json().merge(chain_id_this, "$.timestamps", event_timestamp)
+                p.json().merge(
+                    chain_id_this, "$.timestamps", event_timestamp
+                )
                 p.json().merge(chain_id_this, "$.context", context)
-
             else:
-                # Check for ref type conflicts
                 types_on_chain = {r.split("_")[0] for r in refs_on_chain}
                 types_not_found = {r.split("_")[0] for r in refs_not_found}
                 types_in_conflict = types_on_chain & types_not_found
 
                 if len(types_in_conflict) == 0:
-                    # No conflicts — merge refs and event into existing chain
-                    p.json().merge(chain_id_this, "$.timestamps", event_timestamp)
+                    p.json().merge(
+                        chain_id_this, "$.timestamps", event_timestamp
+                    )
                     p.json().merge(chain_id_this, "$.context", context)
                     for ref in refs_not_found:
-                        p.json().arrappend(chain_id_this, "$.concatenatedrefs", ref)
-
+                        p.json().arrappend(
+                            chain_id_this, "$.concatenatedrefs", ref
+                        )
                 else:
-                    # Conflicts — split refs
                     refs_not_in_conflict = [
-                        r for r in refs_not_found
+                        r
+                        for r in refs_not_found
                         if r.split("_")[0] not in types_in_conflict
                     ]
                     refs_in_conflict = [
-                        r for r in refs_not_found
+                        r
+                        for r in refs_not_found
                         if r.split("_")[0] in types_in_conflict
                     ]
                     refs_minus_conflicts = [
-                        r for r in refs_on_chain
+                        r
+                        for r in refs_on_chain
                         if r.split("_")[0] not in types_in_conflict
                     ]
-
-                    # Update existing chain with non-conflicting refs
-                    p.json().merge(chain_id_this, "$.timestamps", event_timestamp)
+                    p.json().merge(
+                        chain_id_this, "$.timestamps", event_timestamp
+                    )
                     p.json().merge(chain_id_this, "$.context", context)
                     for r in refs_not_in_conflict:
-                        p.json().arrappend(chain_id_this, "$.concatenatedrefs", r)
-
-                    # Create duplicate chain with conflicting refs
+                        p.json().arrappend(
+                            chain_id_this, "$.concatenatedrefs", r
+                        )
                     dup = dict(chain_json)
-                    dup["concatenatedrefs"] = refs_minus_conflicts + refs_in_conflict
-                    dup["timestamps"] = {**chain_json["timestamps"], **event_timestamp}
+                    dup["concatenatedrefs"] = (
+                        refs_minus_conflicts + refs_in_conflict
+                    )
+                    dup["timestamps"] = {
+                        **chain_json["timestamps"],
+                        **event_timestamp,
+                    }
                     p.json().set(self._create_key(), "$", dup)
 
-            # Completeness and termination checks
+            p.expire(chain_id_this, self.CHAIN_TTL_SECONDS)
+
             all_events = events_on_chain | set(event_timestamp.keys())
-            self._check_completeness(p, chain_id_this, all_events, chain_json)
+            if self._should_terminate(all_events):
+                p.delete(chain_id_this)
 
             p.xadd(
                 self.STREAM_NAME,
@@ -162,77 +432,40 @@ class RedisService:
             )
             chain_id = chain_id_this
 
-        p.execute()
+        await p.execute()
         return chain_id
 
-    def _check_completeness(
-        self,
-        pipe: redis.client.Pipeline,
-        chain_id: str,
-        all_events: set[str],
-        chain_json: dict,
-    ) -> None:
-        """Check termination and completeness, updating flags via pipeline.
-
-        Uses the fitted classifier (if available) to predict the single
-        matching profile, then checks whether all terminal nodes are present.
-        Falls back to profile iteration or flat expected_events check.
-        """
-        if self._predictor is not None:
-            context_keys = set(chain_json.get("context", {}).keys())
-            profile = self._predictor.predict(all_events, context_keys)
-            if profile is not None:
-                if profile.terminal_nodes and profile.terminal_nodes <= all_events:
-                    pipe.delete(chain_id)
-            return
-
-        if self.path_profiles:
-            # Fallback: iterate profiles when no predictor is loaded
-            for profile in self.path_profiles:
-                if not all_events <= profile.node_set:
-                    continue
-                if profile.terminal_nodes and profile.terminal_nodes <= all_events:
-                    pipe.delete(chain_id)
-                    break
-                break
-        elif self.expected_events:
-            # Legacy flat check
-            awaited = self.expected_events - all_events
-            if len(awaited) == 0:
-                pipe.delete(chain_id)
-
-    def get_all_chain_keys(self) -> list[str]:
+    async def get_all_chain_keys(self) -> list[str]:
         """Return all event chain JSON document keys (excluding index and stream)."""
-        raw_keys = self.r.keys(f"{self.KEY_BASE}:*")
         result: list[str] = []
-        for k in raw_keys:
+        async for k in self.r.scan_iter(match=f"{self.KEY_BASE}:*"):
             s = k.decode() if isinstance(k, bytes) else str(k)
             if s.endswith(":ecstream") or ":idx" in s:
                 continue
             result.append(s)
         return result
 
-    def get_all_chains(self) -> list[dict]:
+    async def get_all_chains(self) -> list[dict]:
         """Fetch all event chain JSON documents from Redis."""
-        keys = self.get_all_chain_keys()
+        keys = await self.get_all_chain_keys()
         if not keys:
             return []
-        docs = self.r.json().mget(keys, "$")
+        docs = await self.r.json().mget(keys, "$")
         return [doc[0] for doc in docs if doc]
 
-    def delete_all_chains(self) -> int:
+    async def delete_all_chains(self) -> int:
         """Delete all event chain keys and the stream. Returns count deleted."""
-        keys = self.get_all_chain_keys()
+        keys = await self.get_all_chain_keys()
         if not keys:
             return 0
         p = self.r.pipeline()
         for key in keys:
             p.delete(key)
         p.delete(self.STREAM_NAME)
-        results = p.execute()
+        results = await p.execute()
         return sum(1 for r in results if r)
 
-    def load_chains(self, chains: list[dict]) -> int:
+    async def load_chains(self, chains: list[dict]) -> int:
         """Bulk-load chain documents into Redis. Returns count loaded."""
         if not chains:
             return 0
@@ -240,10 +473,11 @@ class RedisService:
         for chain in chains:
             key = self._create_key()
             p.json().set(key, "$", chain)
-        p.execute()
+            p.expire(key, self.CHAIN_TTL_SECONDS)
+        await p.execute()
         return len(chains)
 
-    def _create_new_chain(
+    async def _create_new_chain(
         self,
         concat_refs: list[str],
         event_timestamp: dict,
@@ -259,6 +493,7 @@ class RedisService:
         chain_id = self._create_key()
         p = self.r.pipeline()
         p.json().set(chain_id, "$", chain)
+        p.expire(chain_id, self.CHAIN_TTL_SECONDS)
         p.xadd(self.STREAM_NAME, {"ecid": chain_id})
-        p.execute()
+        await p.execute()
         return chain_id

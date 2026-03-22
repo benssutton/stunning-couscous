@@ -18,7 +18,7 @@ from sklearn.tree import DecisionTreeClassifier as SklearnDT
 
 from services.clickhouse_service import ClickHouseService
 from services.inference import Edge
-from services.models import (
+from schemas.models import (
     ClassifierResult,
     FeatureImportance,
     MethodResult,
@@ -49,6 +49,14 @@ class ChainProfilePredictor:
         self._model = model
         self._feature_names = feature_names
         self._profiles = profiles
+        # Pre-compute index lookups for O(events + ctx) prediction
+        self._event_indices: dict[str, int] = {}
+        self._ctx_indices: dict[str, int] = {}
+        for i, name in enumerate(feature_names):
+            if name.startswith("event:"):
+                self._event_indices[name[6:]] = i
+            elif name.startswith("ctx:"):
+                self._ctx_indices[name[4:]] = i
 
     @property
     def profiles(self) -> dict[int, PathProfile]:
@@ -61,13 +69,14 @@ class ChainProfilePredictor:
         and runs it through the fitted decision tree.
         """
         features = np.zeros(len(self._feature_names), dtype=np.int8)
-        for i, name in enumerate(self._feature_names):
-            if name.startswith("event:"):
-                if name[6:] in events:
-                    features[i] = 1
-            elif name.startswith("ctx:"):
-                if name[4:] in context_keys:
-                    features[i] = 1
+        for event in events:
+            idx = self._event_indices.get(event)
+            if idx is not None:
+                features[idx] = 1
+        for ctx_key in context_keys:
+            idx = self._ctx_indices.get(ctx_key)
+            if idx is not None:
+                features[idx] = 1
         pred = int(self._model.predict(features.reshape(1, -1))[0])
         return self._profiles.get(pred)
 

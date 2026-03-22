@@ -1,130 +1,188 @@
 import random
-from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
-from unittest.mock import MagicMock
 
+import clickhouse_connect
 import httpx
 import pytest
 import redis
+import redis.asyncio as aioredis
+from redis.commands.search.field import TagField
+from redis.commands.search.index_definition import IndexDefinition, IndexType
+from testcontainers.clickhouse import ClickHouseContainer
+from testcontainers.redis import RedisContainer
 
 from main import app
 from services.adjacency_service import AdjacencyService
-from services.clickhouse_service import ClickHouseService
-from services.dependencies import get_adjacency_service, get_clickhouse_service, get_redis_service
+from services.clickhouse_service import ClickHouseBatchWriter, ClickHouseService
+from services.dependencies import (
+    get_adjacency_service,
+    get_batch_writer,
+    get_clickhouse_service,
+    get_redis_service,
+)
 from services.redis_service import RedisService
 
 
-# ---------------------------------------------------------------------------
-# Redis availability check
-# ---------------------------------------------------------------------------
-
-def _redis_available() -> bool:
+def _ensure_index_sync(sync_r):
+    """Create the RediSearch index using the sync Redis client."""
     try:
-        r = redis.Redis(host="localhost", port=6379, db=0, decode_responses=True)
-        r.ping()
-        r.close()
-        return True
-    except redis.ConnectionError:
-        return False
-
-
-_REDIS_UP = _redis_available()
-requires_redis = pytest.mark.skipif(not _REDIS_UP, reason="Redis not available on localhost:6379")
+        sync_r.ft(RedisService.INDEX_NAME).info()
+    except redis.ResponseError:
+        sync_r.ft(RedisService.INDEX_NAME).create_index(
+            [
+                TagField(
+                    "$.concatenatedrefs[*]",
+                    as_name="concatenatedrefs",
+                ),
+                TagField("$.complete", as_name="complete"),
+                TagField("$.terminated", as_name="terminated"),
+            ],
+            definition=IndexDefinition(
+                index_type=IndexType.JSON,
+                prefix=[f"{RedisService.KEY_BASE}:"],
+            ),
+        )
 
 
 # ---------------------------------------------------------------------------
-# Service fixtures
+# Container fixtures (session-scoped — started once for the whole test run)
 # ---------------------------------------------------------------------------
 
 @pytest.fixture(scope="session")
-def redis_pool():
-    """Redis connection pool on DB 0 (RediSearch requires db=0)."""
-    if not _REDIS_UP:
-        pytest.skip("Redis not available")
-    pool = redis.ConnectionPool(
-        host="localhost", port=6379, db=0, decode_responses=True
+def redis_container():
+    """Redis Stack container — required for RediSearch (FT.CREATE)."""
+    with RedisContainer(
+        image="redis/redis-stack:latest"
+    ) as container:
+        yield container
+
+
+@pytest.fixture(scope="session")
+def clickhouse_container():
+    """ClickHouse container."""
+    with ClickHouseContainer(
+        image="clickhouse/clickhouse-server:latest"
+    ) as container:
+        yield container
+
+
+# ---------------------------------------------------------------------------
+# Service fixtures (all sync to avoid event-loop scope issues)
+# ---------------------------------------------------------------------------
+
+@pytest.fixture(scope="session")
+def redis_host_port(redis_container):
+    """Extract host and port from the Redis container for reuse."""
+    host = redis_container.get_container_host_ip()
+    port = int(redis_container.get_exposed_port(6379))
+    return host, port
+
+
+@pytest.fixture(scope="session")
+def redis_pool(redis_host_port):
+    """Async Redis connection pool pointed at the testcontainer."""
+    host, port = redis_host_port
+    pool = aioredis.ConnectionPool(
+        host=host, port=port, db=0, decode_responses=True,
     )
     yield pool
-    pool.disconnect()
 
 
 @pytest.fixture(scope="session")
-def redis_service(redis_pool):
-    """Real RedisService backed by DB 0, with a clean slate."""
-    r = redis.Redis(connection_pool=redis_pool)
-    r.flushdb()
+def sync_redis(redis_host_port):
+    """Sync Redis client for test setup/teardown operations."""
+    host, port = redis_host_port
+    r = redis.Redis(
+        host=host, port=port, db=0, decode_responses=True,
+    )
+    yield r
+    r.close()
+
+
+@pytest.fixture(scope="session")
+def redis_service(redis_pool, sync_redis):
+    """RedisService backed by containerized Redis Stack."""
+    sync_redis.flushdb()
     svc = RedisService(redis_pool)
-    svc.ensure_index()
+    _ensure_index_sync(sync_redis)
     yield svc
-    r.flushdb()
+    sync_redis.flushdb()
 
 
 @pytest.fixture(scope="session")
-def mock_redis():
-    """Mock RedisService for tests that don't need real Redis."""
-    mock = MagicMock(spec=RedisService)
-    mock.add_or_merge_event.return_value = "argus:ec:mock-chain-id"
-    return mock
+def clickhouse_service(clickhouse_container):
+    """Real ClickHouseService backed by a containerized ClickHouse."""
+    host = clickhouse_container.get_container_host_ip()
+    port = int(clickhouse_container.get_exposed_port(8123))
+    ch_client = clickhouse_connect.get_client(
+        host=host,
+        port=port,
+        username=clickhouse_container.username,
+        password=clickhouse_container.password,
+    )
+    svc = ClickHouseService(ch_client, database="argus")
+    svc.ensure_table()
+    svc.ensure_adjacency_table()
+    svc.ensure_profiles_table()
+    svc.ensure_classifier_model_table()
+    yield svc
+    ch_client.close()
 
 
 @pytest.fixture(scope="session")
-def mock_clickhouse():
-    """Mock ClickHouseService — verifies calls without a real ClickHouse."""
-    return MagicMock(spec=ClickHouseService)
-
-
-@pytest.fixture(scope="session")
-def mock_adjacency():
-    """Mock AdjacencyService for tests that don't need real inference."""
-    return MagicMock(spec=AdjacencyService)
+def batch_writer(clickhouse_service):
+    """ClickHouse batch writer for tests — flushes every append (batch=1)."""
+    writer = ClickHouseBatchWriter(
+        clickhouse_service.client,
+        f"{clickhouse_service.database}.events",
+        max_batch_size=1,
+        flush_interval_s=600,
+    )
+    # No start() needed: with batch_size=1 every append() auto-flushes
+    yield writer
 
 
 @pytest.fixture(autouse=True)
 def _flush_redis_between_tests(request):
-    """Flush Redis DB 0 before each test for isolation.
-
-    Only activates for tests that use the real Redis `client` fixture.
-    """
-    if not _REDIS_UP or "client" not in request.fixturenames:
+    """Flush Redis and truncate ClickHouse tables before each test."""
+    if "client" not in request.fixturenames:
         yield
         return
-    pool = request.getfixturevalue("redis_pool")
-    r = redis.Redis(connection_pool=pool)
-    r.flushdb()
-    svc = RedisService(pool)
-    svc.ensure_index()
+    sync_r = request.getfixturevalue("sync_redis")
+    sync_r.flushdb()
+    _ensure_index_sync(sync_r)
+    ch_svc = request.getfixturevalue("clickhouse_service")
+    ch_svc.client.command(
+        "TRUNCATE TABLE IF EXISTS argus.events"
+    )
+    ch_svc.client.command(
+        "TRUNCATE TABLE IF EXISTS argus.adjacency_edges"
+    )
     yield
 
 
 @pytest.fixture(scope="session")
-async def client(redis_service, mock_clickhouse):
-    """Async httpx client with real Redis + mock ClickHouse."""
-    app.dependency_overrides[get_redis_service] = lambda: redis_service
-    app.dependency_overrides[get_clickhouse_service] = lambda: mock_clickhouse
+def client(redis_service, clickhouse_service, batch_writer):
+    """Async httpx client with real Redis Stack + real ClickHouse."""
+    adjacency_service = AdjacencyService(clickhouse_service)
+    app.dependency_overrides[get_redis_service] = (
+        lambda: redis_service
+    )
+    app.dependency_overrides[get_clickhouse_service] = (
+        lambda: clickhouse_service
+    )
+    app.dependency_overrides[get_adjacency_service] = (
+        lambda: adjacency_service
+    )
+    app.dependency_overrides[get_batch_writer] = (
+        lambda: batch_writer
+    )
     transport = httpx.ASGITransport(app=app)
-    async with httpx.AsyncClient(transport=transport, base_url="http://test") as c:
-        yield c
+    c = httpx.AsyncClient(
+        transport=transport, base_url="http://test",
+    )
+    yield c
     app.dependency_overrides.clear()
-
-
-@asynccontextmanager
-async def _noop_lifespan(app):
-    yield
-
-
-@pytest.fixture(scope="session")
-async def client_no_redis(mock_redis, mock_clickhouse, mock_adjacency):
-    """Async httpx client with mocked Redis + mock ClickHouse (no Redis required)."""
-    original_lifespan = app.router.lifespan_context
-    app.router.lifespan_context = _noop_lifespan
-    app.dependency_overrides[get_redis_service] = lambda: mock_redis
-    app.dependency_overrides[get_clickhouse_service] = lambda: mock_clickhouse
-    app.dependency_overrides[get_adjacency_service] = lambda: mock_adjacency
-    transport = httpx.ASGITransport(app=app)
-    async with httpx.AsyncClient(transport=transport, base_url="http://test") as c:
-        yield c
-    app.dependency_overrides.clear()
-    app.router.lifespan_context = original_lifespan
 
 
 # ---------------------------------------------------------------------------
@@ -183,32 +241,63 @@ def sample_event_f():
 
 @pytest.fixture
 def event_chain_batch():
-    """Complete set of events for one transaction through the processing tree.
+    """Complete set of events for one transaction.
 
     Tree: A->B->D, A->C->E->F, A->C->E->G, A->H
-    Timestamps are ordered so that dependencies always precede dependents.
     """
-    i = 42  # transaction index
+    i = 42
     base = datetime(2025, 3, 19, 12, 0, 0)
-
-    # Offsets in ms — parents always before children
-    offsets = {"A": 0, "B": 1, "C": 2, "H": 3, "D": 5, "E": 8, "F": 12, "G": 14}
+    offsets = {
+        "A": 0, "B": 1, "C": 2, "H": 3,
+        "D": 5, "E": 8, "F": 12, "G": 14,
+    }
 
     def ts(name: str) -> str:
-        return (base + timedelta(milliseconds=offsets[name])).isoformat(
-            timespec="milliseconds"
-        )
+        return (
+            base + timedelta(milliseconds=offsets[name])
+        ).isoformat(timespec="milliseconds")
 
-    # Pick random ref for G's third ref (A or C, matching notebook behavior)
     g_third_ref = random.choice(["A", "C"])
 
     return [
-        _make_event("A", [_make_ref("A", i)], ts("A"), {"tea": i}),
-        _make_event("B", [_make_ref("A", i), _make_ref("B", i)], ts("B")),
-        _make_event("C", [_make_ref("C", i), _make_ref("A", i)], ts("C"), {"tea": i, "coffee": i}),
+        _make_event(
+            "A", [_make_ref("A", i)], ts("A"), {"tea": i},
+        ),
+        _make_event(
+            "B",
+            [_make_ref("A", i), _make_ref("B", i)],
+            ts("B"),
+        ),
+        _make_event(
+            "C",
+            [_make_ref("C", i), _make_ref("A", i)],
+            ts("C"),
+            {"tea": i, "coffee": i},
+        ),
         _make_event("H", [_make_ref("A", i)], ts("H")),
-        _make_event("D", [_make_ref("D", i), _make_ref("B", i)], ts("D")),
-        _make_event("E", [_make_ref("E", i), _make_ref("C", i)], ts("E")),
-        _make_event("F", [_make_ref("F", i), _make_ref("C", i), _make_ref("E", i)], ts("F"), {"milkshake": i}),
-        _make_event("G", [_make_ref("G", i), _make_ref("E", i), _make_ref(g_third_ref, i)], ts("G")),
+        _make_event(
+            "D",
+            [_make_ref("D", i), _make_ref("B", i)],
+            ts("D"),
+        ),
+        _make_event(
+            "E",
+            [_make_ref("E", i), _make_ref("C", i)],
+            ts("E"),
+        ),
+        _make_event(
+            "F",
+            [_make_ref("F", i), _make_ref("C", i), _make_ref("E", i)],
+            ts("F"),
+            {"milkshake": i},
+        ),
+        _make_event(
+            "G",
+            [
+                _make_ref("G", i),
+                _make_ref("E", i),
+                _make_ref(g_third_ref, i),
+            ],
+            ts("G"),
+        ),
     ]

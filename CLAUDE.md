@@ -12,10 +12,10 @@ The problem domain, simulation, and prototype algorithms are detailed in `notebo
 
 ## Development Environment
 
-- **Python**: `C:\Users\benss\.conda\envs\p312` (conda, Python 3.12)
+- **Python**: `C:\Users\Ben\.conda\envs\p312` (conda, Python 3.12)
 - **Package manager**: conda (configured in `.vscode/settings.json`)
 - **Activate env**: `conda activate p312`
-- **Install deps**: `pip install fastapi uvicorn redis numpy pandas polars scipy plotly ipycytoscape ulid-py pydantic pydantic-settings clickhouse-connect httpx scikit-learn joblib pytest pytest-asyncio pytest-cov`
+- **Install deps**: `pip install -r requirements.txt` (requirements.txt in root folder)
 - **Run API**: `python main.py` or `uvicorn main:app --reload` (FastAPI app in `main.py`, port 8000)
 - **Run notebook**: `jupyter lab notebooks/`
 - **Redis Stack 7.4+** required locally on `localhost:6379` (Redis Insight at `http://localhost:8001`)
@@ -37,12 +37,12 @@ REST endpoint (FastAPI, main.py)
 
 ### Processing Pipeline
 1. Receive events as JSON via `POST /events`
-2. Correlate events into event chains by matching shared transaction references (O(1) via Redis Search index on concatenated refs)
-3. Persist every event to ClickHouse (`argus.events` table)
+2. Correlate events into event chains atomically via a Lua script that performs FT.SEARCH + chain create/merge in a single Redis round-trip
+3. Persist every event to ClickHouse via an async in-process batch writer (`ClickHouseBatchWriter`) — the hot path never waits for ClickHouse
 4. Compute adjacency matrix on demand via `PUT /adjacency_matrix` using Pearson correlation of timestamp series from ClickHouse
 5. Classify event chain path profiles via `PUT /classifier` — discovers which node-sets occur, identifies terminal nodes, and finds discriminating features using pluggable classification methods
 6. Trained classifier model (sklearn DecisionTree) is serialized via joblib, persisted to ClickHouse, and loaded on startup for runtime profile prediction
-7. Determine chain termination using inferred path profiles: when all terminal nodes for the predicted profile are received, the chain is deleted from Redis
+7. Determine chain termination using inferred path profiles: when all terminal nodes for the predicted profile are received, the chain is deleted from Redis. Chain keys have a 10-minute TTL as a safety net against stale chains
 
 ### API Endpoints
 - `POST /events` — ingest an event, merge into Redis event chain, persist to ClickHouse
@@ -69,11 +69,11 @@ Adjacency matrix derived from Pearson correlation of timestamp series between ev
 
 ## Key Dependencies
 
-Core: numpy, pandas, polars, scipy, redis, ulid, pydantic, pydantic-settings, fastapi, uvicorn, clickhouse-connect, httpx, scikit-learn, joblib
+Core: numpy, pandas, polars, polars-ds, scipy, redis, ulid, pydantic, pydantic-settings, fastapi, uvicorn, clickhouse-connect, httpx, scikit-learn, joblib
 
 Visualization (notebook only): plotly, ipycytoscape
 
-Test: pytest, pytest-asyncio, pytest-cov
+Test: pytest, pytest-asyncio, pytest-cov, testcontainers
 
 ## Scripts
 
@@ -86,22 +86,24 @@ Test: pytest, pytest-asyncio, pytest-cov
 
 ## Current Status
 
-Core functionality to ingest events, train classifiers, and employ classifiers has been completed. `main.py` is a FastAPI app that receives events, assembles event chains in Redis, and persists events to ClickHouse. The `services/` directory contains: `redis_service.py`, `clickhouse_service.py`, `adjacency_service.py`, `inference.py`, `chain_classifier.py`, `models.py`, `dependencies.py`. Adjacency matrix computation and chain path classification work end-to-end. The classifier supports pluggable methods (`RatioClassifier` and `TreeClassifier`) and persists a fitted sklearn model via joblib to ClickHouse for runtime use. At startup, the model and path profiles are loaded from ClickHouse and used to predict the single matching profile for each chain, deleting terminated chains from Redis. All REST endpoints support full CRUD: GET reads from ClickHouse, POST overwrites with caller data, PUT computes/trains from source data.
-
-**Next steps**: Build out more sophisticated test scenarios to ensure correct function of the correlation and classifiers.
+Core functionality to ingest events, train classifiers, and employ classifiers has been completed. `main.py` is a FastAPI app with routers in `routers/` (events, adjacency, classifier, cache, chains). Data models are in `schemas/models.py`. Services in `services/` include: `redis_service.py` (async, uses redis.asyncio with Lua scripting), `clickhouse_service.py` (includes `ClickHouseBatchWriter`), `adjacency_service.py`, `inference.py`, `chain_classifier.py`, `dependencies.py`. Adjacency matrix computation and chain path classification work end-to-end. The classifier supports pluggable methods (`RatioClassifier` and `TreeClassifier`) and persists a fitted sklearn model via joblib to ClickHouse for runtime use. At startup, the model and path profiles are loaded from ClickHouse and used to predict the single matching profile for each chain, deleting terminated chains from Redis. All REST endpoints support full CRUD: GET reads from ClickHouse, POST overwrites with caller data, PUT computes/trains from source data.
 
 ## Testing
 
 - **Run tests**: `python -m pytest` (or `python -m pytest -v` for verbose)
-- **Run single test**: `python -m pytest tests/test_chains.py::test_post_single_event`
+- **Run single test**: `python -m pytest tests/test_endpoints.py::test_post_single_event`
 - **Always write async tests** — use `async def test_*` with `httpx.AsyncClient`. `asyncio_mode = auto` is set in `pytest.ini` so no `@pytest.mark.asyncio` decorator needed.
 - Tests use `httpx.AsyncClient` with `httpx.ASGITransport(app=app)` — not `fastapi.testclient.TestClient`
-- Redis-dependent tests are marked `@requires_redis` and skip gracefully when Redis is unavailable
+- Tests use **testcontainers** (Docker) for Redis Stack and ClickHouse — Docker must be running
+- Session-scoped event loop: test files that use session-scoped fixtures (client, redis, clickhouse) must declare `pytestmark = pytest.mark.asyncio(loop_scope="session")`. `asyncio_default_fixture_loop_scope = session` is set in `pytest.ini`.
+- Session-scoped fixtures in `conftest.py` are **sync** (not async) to avoid event-loop-scope conflicts. Use the `sync_redis` fixture for test assertions against Redis data.
 - Coverage is configured in `pytest.ini` (`--cov=services --cov=main`)
 
 ## Gotchas
 
 - No `.gitignore` yet — avoid committing `.vscode/`, `__pycache__/`, `*.pyc`, `.env`, `notebooks/.ipynb_checkpoints/`
-- The notebook prototype uses `redis_om` in one cell but it's not installed and that cell fails — the working implementation uses raw `redis` commands instead
+- The notebook prototype uses `redis_om` in one cell but it's not installed and that cell fails — the working implementation uses `redis.asyncio` commands instead
 - Redis index `argus:ec:idx` is created by FastAPI on startup via `ensure_index()` — but `scripts/cleanup_events.py` drops it, so FastAPI must be restarted after cleanup
 - ClickHouse events table has a 90-day TTL — the generator uses current timestamps to avoid expiry
+- ClickHouse UUID columns cannot be exported via Arrow format (`query_arrow`) — use `toString(col)` in the SELECT or avoid `query_arrow` for tables with UUID columns
+- Redis chain keys have a 10-minute TTL (`CHAIN_TTL_SECONDS = 600`) — refreshed on each merge, but truly stale chains will auto-evict

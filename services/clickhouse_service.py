@@ -1,3 +1,4 @@
+import asyncio
 import logging
 from datetime import datetime
 from uuid import UUID
@@ -6,9 +7,96 @@ import polars as pl
 from clickhouse_connect.driver.client import Client
 
 from services.inference import Edge
-from services.models import Event
+from schemas.models import Event
 
 logger = logging.getLogger(__name__)
+
+
+class ClickHouseBatchWriter:
+    """Async buffer that accumulates event rows and flushes to ClickHouse in batches.
+
+    Flush triggers: buffer reaches ``max_batch_size`` rows **or**
+    ``flush_interval_s`` seconds elapse — whichever comes first.
+    All ClickHouse I/O happens in a thread via ``asyncio.to_thread`` so
+    the caller never blocks the event loop.
+    """
+
+    COLUMN_NAMES = [
+        "chain_id",
+        "event_name",
+        "timestamp",
+        "refs",
+        "context_keys",
+        "context_values",
+    ]
+
+    def __init__(
+        self,
+        client: Client,
+        table: str,
+        *,
+        max_batch_size: int = 500,
+        flush_interval_s: float = 0.1,
+    ):
+        self._client = client
+        self._table = table
+        self._max_batch_size = max_batch_size
+        self._flush_interval_s = flush_interval_s
+        self._buffer: list[list] = []
+        self._lock = asyncio.Lock()
+        self._flush_task: asyncio.Task | None = None
+
+    async def start(self) -> None:
+        """Start the periodic flush background task."""
+        self._flush_task = asyncio.create_task(self._periodic_flush())
+
+    async def stop(self) -> None:
+        """Cancel the background task and flush remaining rows."""
+        if self._flush_task is not None:
+            self._flush_task.cancel()
+            try:
+                await self._flush_task
+            except asyncio.CancelledError:
+                pass
+        async with self._lock:
+            if self._buffer:
+                await self._do_flush()
+
+    async def append(self, row: list) -> None:
+        """Append a single row; triggers immediate flush if buffer is full."""
+        async with self._lock:
+            self._buffer.append(row)
+            if len(self._buffer) >= self._max_batch_size:
+                await self._do_flush()
+
+    async def _periodic_flush(self) -> None:
+        """Background loop that flushes on a timer."""
+        while True:
+            await asyncio.sleep(self._flush_interval_s)
+            async with self._lock:
+                if self._buffer:
+                    await self._do_flush()
+
+    async def _do_flush(self) -> None:
+        """Send buffered rows to ClickHouse in a thread (must hold ``_lock``)."""
+        batch = self._buffer
+        self._buffer = []
+        try:
+            await asyncio.to_thread(
+                self._client.insert,
+                self._table,
+                batch,
+                column_names=self.COLUMN_NAMES,
+            )
+        except Exception:
+            logger.exception(
+                "ClickHouse batch insert failed — %d rows dropped", len(batch)
+            )
+
+    @property
+    def pending(self) -> int:
+        """Number of rows waiting to be flushed (non-locking, approximate)."""
+        return len(self._buffer)
 
 CREATE_EVENTS_TABLE_SQL = """
 CREATE TABLE IF NOT EXISTS {database}.events (
@@ -27,7 +115,7 @@ CREATE TABLE IF NOT EXISTS {database}.events (
 ) ENGINE = MergeTree()
 PARTITION BY toYYYYMMDD(timestamp)
 ORDER BY (event_name, timestamp, event_id)
-TTL timestamp + INTERVAL 90 DAY
+TTL toDateTime(timestamp) + INTERVAL 90 DAY
 SETTINGS index_granularity = 8192
 """
 
@@ -85,6 +173,15 @@ class ClickHouseService:
             f"ALTER TABLE {self.database}.events "
             "ADD COLUMN IF NOT EXISTS chain_id String DEFAULT '' AFTER event_id"
         )
+        # Bloom filter skip-index on chain_id for faster analytical queries
+        try:
+            self.client.command(
+                f"ALTER TABLE {self.database}.events "
+                "ADD INDEX IF NOT EXISTS idx_chain_id chain_id "
+                "TYPE bloom_filter GRANULARITY 4"
+            )
+        except Exception:
+            pass  # index may already exist or ALTER not supported on this version
 
     def ensure_adjacency_table(self) -> None:
         """Create the adjacency_edges table if it doesn't exist."""
@@ -161,48 +258,24 @@ class ClickHouseService:
         arrow_table = self.client.query_arrow(query, use_strings=True)
         return pl.from_arrow(arrow_table)
 
-    def query_latest_adjacency(self) -> dict | None:
-        """Fetch the full latest adjacency result: metadata + edges.
+    def query_adjacency(self) -> dict | None:
+        """Fetch all adjacency edges from ClickHouse.
 
-        Returns a dict with run_id, method, max_pval, edges, or None if empty.
+        The table is truncated before each insert, so the full table
+        content represents the single latest result.
         """
-        meta_query = (
-            f"SELECT run_id, method, max_pval "
-            f"FROM {self.database}.adjacency_edges "
-            f"ORDER BY computed_at DESC LIMIT 1"
-        )
-        try:
-            arrow_table = self.client.query_arrow(meta_query, use_strings=True)
-        except Exception:
-            return None
-        df = pl.from_arrow(arrow_table)
-        if df.is_empty():
-            return None
-        meta = df.row(0, named=True)
-        edges = self.query_latest_edges()
-        return {
-            "run_id": meta["run_id"],
-            "method": meta["method"],
-            "max_pval": meta["max_pval"],
-            "edges": edges,
-        }
-
-    def query_latest_edges(self) -> list[Edge]:
-        """Fetch edges from the most recent adjacency run."""
         query = (
-            f"SELECT source, target, correlation, p_value, "
+            f"SELECT toString(run_id) AS run_id, method, max_pval, "
+            f"source, target, correlation, p_value, "
             f"mean_delta_ms, std_delta_ms, max_delta_ms, min_delta_ms, sample_count "
-            f"FROM {self.database}.adjacency_edges "
-            f"WHERE run_id = ("
-            f"  SELECT run_id FROM {self.database}.adjacency_edges "
-            f"  ORDER BY computed_at DESC LIMIT 1"
-            f")"
+            f"FROM {self.database}.adjacency_edges"
         )
         arrow_table = self.client.query_arrow(query, use_strings=True)
         df = pl.from_arrow(arrow_table)
         if df.is_empty():
-            return []
-        return [
+            return None
+        meta = df.row(0, named=True)
+        edges = [
             Edge(
                 source=row["source"],
                 target=row["target"],
@@ -216,6 +289,12 @@ class ClickHouseService:
             )
             for row in df.iter_rows(named=True)
         ]
+        return {
+            "run_id": meta["run_id"],
+            "method": meta["method"],
+            "max_pval": meta["max_pval"],
+            "edges": edges,
+        }
 
     def insert_adjacency_result(
         self,
@@ -224,12 +303,9 @@ class ClickHouseService:
         method: str,
         max_pval: float,
     ) -> None:
-        """Drop, recreate, and insert adjacency edges into ClickHouse."""
+        """Truncate and insert adjacency edges into ClickHouse."""
         self.client.command(
-            f"DROP TABLE IF EXISTS {self.database}.adjacency_edges"
-        )
-        self.client.command(
-            CREATE_ADJACENCY_TABLE_SQL.format(database=self.database)
+            f"TRUNCATE TABLE IF EXISTS {self.database}.adjacency_edges"
         )
         if not edges:
             return
@@ -271,12 +347,9 @@ class ClickHouseService:
         )
 
     def insert_classification_result(self, profiles: list) -> None:
-        """Drop, recreate, and insert path profiles into ClickHouse."""
+        """Truncate and insert path profiles into ClickHouse."""
         self.client.command(
-            f"DROP TABLE IF EXISTS {self.database}.path_profiles"
-        )
-        self.client.command(
-            CREATE_PROFILES_TABLE_SQL.format(database=self.database)
+            f"TRUNCATE TABLE IF EXISTS {self.database}.path_profiles"
         )
         if not profiles:
             return
@@ -305,7 +378,7 @@ class ClickHouseService:
 
     def query_path_profiles(self) -> list:
         """Load persisted path profiles from ClickHouse."""
-        from services.models import PathProfile
+        from schemas.models import PathProfile
 
         query = (
             f"SELECT profile_id, node_set, terminal_nodes, chain_count, fraction "
@@ -330,14 +403,11 @@ class ClickHouseService:
         ]
 
     def insert_classifier_model(self, model_bytes: bytes) -> None:
-        """Drop, recreate, and insert the serialized classifier model."""
+        """Truncate and insert the serialized classifier model."""
         import base64
 
         self.client.command(
-            f"DROP TABLE IF EXISTS {self.database}.classifier_model"
-        )
-        self.client.command(
-            CREATE_CLASSIFIER_MODEL_TABLE_SQL.format(database=self.database)
+            f"TRUNCATE TABLE IF EXISTS {self.database}.classifier_model"
         )
         encoded = base64.b64encode(model_bytes).decode("ascii")
         self.client.insert(
