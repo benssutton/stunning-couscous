@@ -1,12 +1,8 @@
-"""Tests for chain path classifier: profile discovery, terminal identification,
-feature matrix construction, and classification methods."""
-
 import polars as pl
 import pytest
 
 from services.chain_classifier import (
     ChainClassifier,
-    RatioClassifier,
     TreeClassifier,
 )
 from services.inference import Edge
@@ -176,32 +172,6 @@ def _make_features_and_labels() -> tuple[pl.DataFrame, pl.Series]:
     labels = pl.Series("profile_id", [0] * 5 + [1] * 5)
     return features, labels
 
-
-class TestRatioClassifier:
-    def test_fit_predict_perfect(self):
-        features, labels = _make_features_and_labels()
-        clf = RatioClassifier(min_gap=0.5)
-        clf.fit(features, labels)
-        preds = clf.predict(features)
-        assert preds == labels.to_list()
-
-    def test_feature_importances_identify_j_and_juice(self):
-        features, labels = _make_features_and_labels()
-        clf = RatioClassifier(min_gap=0.5)
-        clf.fit(features, labels)
-        important_names = {fi.feature_name for fi in clf.feature_importances()}
-        assert "event:J" in important_names
-        assert "ctx:juice" in important_names
-        # Common features should NOT be important
-        assert "event:A" not in important_names
-
-    def test_importances_are_sorted_descending(self):
-        features, labels = _make_features_and_labels()
-        clf = RatioClassifier(min_gap=0.5)
-        clf.fit(features, labels)
-        imps = clf.feature_importances()
-        for i in range(len(imps) - 1):
-            assert imps[i].importance >= imps[i + 1].importance
 
 
 class TestTreeClassifier:

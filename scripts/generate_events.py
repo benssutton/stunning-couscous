@@ -9,24 +9,29 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from tests.data_simulation import DataSimulator
 
+BATCH_SIZE = 50
+
+
 def post_events(events: list[dict], base_url: str) -> None:
-    """POST each event to /events and print progress."""
+    """POST events to /events in batches of BATCH_SIZE."""
     total = len(events)
     success = 0
     errors = 0
     t0 = time.perf_counter()
 
     with httpx.Client(base_url=base_url, timeout=30.0) as client:
-        for i, event in enumerate(events):
+        for batch_start in range(0, total, BATCH_SIZE):
+            batch = events[batch_start : batch_start + BATCH_SIZE]
+            i = batch_start + len(batch) - 1  # index of last event in batch
             try:
-                resp = client.post("/events", json=event)
+                resp = client.post("/events", json=batch)
                 resp.raise_for_status()
-                success += 1
+                success += len(batch)
             except httpx.HTTPError as exc:
-                errors += 1
-                if errors <= 5:
-                    print(f"  ERROR on event {i}: {exc}")
-                elif errors == 6:
+                errors += len(batch)
+                if errors <= 5 * BATCH_SIZE:
+                    print(f"  ERROR on batch starting at {batch_start}: {exc}")
+                elif errors == 6 * BATCH_SIZE:
                     print("  ... suppressing further error details")
 
             if (i + 1) % 200 == 0 or i == total - 1:
@@ -44,7 +49,7 @@ def main(intervals: int = 10, seed: int = 42, url: str = "http://localhost:8000"
 
     print(f"Simulating {intervals} intervals...")
     simulator = DataSimulator(num_intervals=intervals, seed=seed)
-    events = simulator.generate(prefix=run_prefix)
+    _, events = simulator.generate(prefix=run_prefix)
     print(f"  Total events generated: {len(events)}")
 
     print(f"\nPOSTing to {url}")

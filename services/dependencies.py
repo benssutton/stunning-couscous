@@ -19,7 +19,7 @@ class Settings(BaseSettings):
     clickhouse_host: str = "localhost"
     clickhouse_port: int = 8123
     clickhouse_database: str = "argus"
-    clickhouse_password: str = "clickhouse"
+    clickhouse_password: str = ""
 
 
 settings = Settings()

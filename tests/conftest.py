@@ -1,5 +1,10 @@
+import os
 import random
 from datetime import datetime, timedelta
+
+# Disable Ryuk (testcontainers resource reaper) — its port 8080 is not
+# mapped on Windows/Docker Desktop, causing a ConnectionError on startup.
+os.environ.setdefault("TESTCONTAINERS_RYUK_DISABLED", "true")
 
 import clickhouse_connect
 import httpx

@@ -1,8 +1,4 @@
-"""Simulated telemetry event generation for tests.
-
-Mirrors the logic from notebooks/Event Chains Revisited.ipynb.
-Processing tree: A->B->D, A->C->E->F, A->C->E->G, A->H->J (J is random subset).
-"""
+from typing import Tuple
 
 from datetime import datetime, timezone
 
@@ -28,15 +24,7 @@ PROC_PARAMS = {
 
 
 class DataSimulator:
-    """Generates simulated telemetry events suitable for POSTing to /events.
-
-    Parameters
-    ----------
-    num_intervals:
-        Number of 1-second simulation intervals.  Default 1.
-    seed:
-        Optional random seed for reproducibility.
-    """
+    """Generates simulated telemetry events."""
 
     def __init__(self, num_intervals: int = 1, seed: int | None = None) -> None:
         self.num_intervals = num_intervals
@@ -46,14 +34,14 @@ class DataSimulator:
         if seed is not None:
             np.random.seed(seed)
 
-    def generate(self, prefix: str = "") -> list[dict]:
+    def generate(self, prefix: str = "") -> Tuple[int, list[dict]]:
         """Return simulated events as a list of JSON-serialisable dicts."""
         T = self._simulate_originating_events()
         num_obs = T.shape[0]
         timestamps, _ = self._simulate_timestamps(T)
         trans_refs = self._simulate_refs(num_obs, prefix=prefix)
         context = self._simulate_context(num_obs)
-        return self._build_event_list(timestamps, trans_refs, context)
+        return len(T), self._build_event_list(timestamps, trans_refs, context)
 
     # ------------------------------------------------------------------
     # Private simulation steps

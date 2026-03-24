@@ -1,10 +1,3 @@
-"""Chain path classifier: discovers path profiles, terminal nodes, and
-discriminating features from observed event chain data.
-
-Uses pluggable classification methods (ClassificationMethod protocol) so
-different algorithms can be compared side-by-side.
-"""
-
 from __future__ import annotations
 
 import logging
@@ -105,76 +98,6 @@ class ClassificationMethod(Protocol):
     def predict(self, features: pl.DataFrame) -> list[int]: ...
     def feature_importances(self) -> list[FeatureImportance]: ...
 
-
-class RatioClassifier:
-    """Threshold-based classifier using per-profile feature presence ratios.
-
-    For each binary feature, computes the fraction of chains in each profile
-    that have the feature set to 1.  A feature is discriminating when it has
-    a large ratio gap between profiles.  At predict time, each row is scored
-    against every profile by counting how many discriminating features match.
-    """
-
-    def __init__(self, min_gap: float = 0.5) -> None:
-        self._min_gap = min_gap
-        self._ratios: dict[int, dict[str, float]] = {}  # profile_id → {feat: ratio}
-        self._profile_ids: list[int] = []
-        self._feature_names: list[str] = []
-        self._importances: list[FeatureImportance] = []
-
-    def fit(self, features: pl.DataFrame, labels: pl.Series) -> None:
-        self._feature_names = features.columns
-        self._profile_ids = sorted(labels.unique().to_list())
-
-        # Compute presence ratio per profile per feature
-        combined = features.with_columns(labels.alias("_label"))
-        self._ratios = {}
-        for pid in self._profile_ids:
-            subset = combined.filter(pl.col("_label") == pid)
-            n = subset.height
-            if n == 0:
-                self._ratios[pid] = {f: 0.0 for f in self._feature_names}
-                continue
-            self._ratios[pid] = {
-                f: float(subset[f].sum()) / n for f in self._feature_names
-            }
-
-        # Compute importances: max ratio gap across any pair of profiles
-        importances = []
-        for feat in self._feature_names:
-            ratios = [self._ratios[pid][feat] for pid in self._profile_ids]
-            gap = max(ratios) - min(ratios) if len(ratios) > 1 else 0.0
-            if gap >= self._min_gap:
-                importances.append(FeatureImportance(feature_name=feat, importance=gap))
-        importances.sort(key=lambda x: x.importance, reverse=True)
-        self._importances = importances
-
-    def predict(self, features: pl.DataFrame) -> list[int]:
-        discriminating = {fi.feature_name for fi in self._importances}
-        predictions = []
-        for row in features.iter_rows(named=True):
-            best_pid = self._profile_ids[0]
-            best_score = -1.0
-            for pid in self._profile_ids:
-                score = 0.0
-                for feat in discriminating:
-                    val = row[feat]
-                    ratio = self._ratios[pid][feat]
-                    # Score higher when feature presence matches profile ratio
-                    if val == 1 and ratio > 0.5:
-                        score += ratio
-                    elif val == 0 and ratio < 0.5:
-                        score += (1 - ratio)
-                if score > best_score:
-                    best_score = score
-                    best_pid = pid
-            predictions.append(best_pid)
-        return predictions
-
-    def feature_importances(self) -> list[FeatureImportance]:
-        return self._importances
-
-
 class TreeClassifier:
     """sklearn DecisionTreeClassifier wrapper."""
 
@@ -217,7 +140,6 @@ class ChainClassifier:
     def __init__(self, ch_svc: ClickHouseService):
         self.ch_svc = ch_svc
         self.methods: dict[str, ClassificationMethod] = {
-            "ratio": RatioClassifier(),
             "decision_tree": TreeClassifier(),
         }
 
