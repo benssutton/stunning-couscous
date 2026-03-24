@@ -18,8 +18,8 @@ class Settings(BaseSettings):
     redis_port: int = 6379
     clickhouse_host: str = "localhost"
     clickhouse_port: int = 8123
-    clickhouse_database: str = "argus"
-    clickhouse_password: str = ""
+    clickhouse_database: str = "arestor"
+    clickhouse_password: str = "clickhouse"
 
 
 settings = Settings()

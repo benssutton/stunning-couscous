@@ -144,9 +144,9 @@ return {'MERGED', chain_key, cjson.encode(all_evts), cjson.encode(chain)}
 
 
 class RedisService:
-    INDEX_NAME = "argus:ec:idx"
-    KEY_BASE = "argus:ec"
-    STREAM_NAME = "argus:ecstream"
+    INDEX_NAME = "arestor:ec:idx"
+    KEY_BASE = "arestor:ec"
+    STREAM_NAME = "arestor:ecstream"
     CHAIN_TTL_SECONDS = 600  # 10-minute TTL for stale chain protection
 
     def __init__(self, pool: aioredis.ConnectionPool):
@@ -252,38 +252,57 @@ class RedisService:
         # Termination check
         all_events = set(json.loads(events_json)) if events_json else set()
         if all_events:
-            should_delete = self._should_terminate(all_events)
-            if should_delete:
+            chain_ctx_keys: set[str] = set()
+            if chain_json_str and chain_json_str != '{}':
+                chain_data = json.loads(chain_json_str)
+                chain_ctx_keys = set(chain_data.get("context", {}).keys())
+            all_ctx_keys = chain_ctx_keys | set(event.Context.keys())
+            if self._should_terminate(event.EventName, all_events, all_ctx_keys):
                 await self.r.delete(chain_id)
 
         return chain_id
 
-    def _should_terminate(self, all_events: set[str]) -> bool:
-        """Pure check — returns True if the chain should be deleted.
+    def _should_terminate(
+        self,
+        current_event_name: str,
+        all_events: set[str],
+        context_keys: set[str],
+    ) -> bool:
+        """Check whether a chain should be terminated after receiving an event.
 
-        Uses exact node_set matching: the chain is terminated only when
-        its event set exactly equals a known profile's node_set.  This
-        avoids both premature termination (predicting the wrong profile
-        on an incomplete chain) and over-conservatism (refusing to
-        terminate when a superset profile exists).
+        1. Return early if the current event is not a terminal node in any profile.
+        2. Build non-terminal features (events minus terminals + context keys).
+        3. Predict the chain's path profile using the fitted model.
+        4. Terminate if the chain contains all terminal nodes of the predicted profile.
         """
-        profiles = (
-            list(self._predictor.profiles.values())
-            if self._predictor is not None
-            else self.path_profiles
+        if self._predictor is None:
+            if self.expected_events:
+                return not (self.expected_events - all_events)
+            return False
+
+        profiles = list(self._predictor.profiles.values())
+
+        # Skip prediction if current event is not a terminal in any profile
+        if not any(
+            current_event_name in p.terminal_nodes
+            for p in profiles
+            if p.terminal_nodes
+        ):
+            return False
+
+        # Build feature inputs excluding all terminal nodes
+        all_terminals = frozenset().union(
+            *(p.terminal_nodes for p in profiles if p.terminal_nodes)
         )
+        non_terminal_events = all_events - all_terminals
 
-        if profiles:
-            return any(
-                p.terminal_nodes and all_events == p.node_set
-                for p in profiles
-            )
+        # Predict profile from non-terminal features
+        profile = self._predictor.predict(non_terminal_events, context_keys)
+        if profile is None or not profile.terminal_nodes:
+            return False
 
-        if self.expected_events:
-            if not (self.expected_events - all_events):
-                return True
-
-        return False
+        # Terminate if chain has all terminal nodes of the predicted profile
+        return profile.terminal_nodes <= all_events
 
     async def _handle_conflict(
         self,
@@ -420,8 +439,11 @@ class RedisService:
 
             p.expire(chain_id_this, self.CHAIN_TTL_SECONDS)
 
+            current_event_name = next(iter(event_timestamp))
             all_events = events_on_chain | set(event_timestamp.keys())
-            if self._should_terminate(all_events):
+            chain_ctx_keys = set(chain_json.get("context", {}).keys())
+            all_ctx_keys = chain_ctx_keys | set(context.keys())
+            if self._should_terminate(current_event_name, all_events, all_ctx_keys):
                 p.delete(chain_id_this)
 
             p.xadd(

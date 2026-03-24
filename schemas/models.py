@@ -1,11 +1,10 @@
 from pydantic import BaseModel
 
-
+# Events
 class Ref(BaseModel):
     type: str
     id: str
     ver: int
-
 
 class Event(BaseModel):
     EventName: str
@@ -14,33 +13,27 @@ class Event(BaseModel):
     Context: dict = {}
 
 
-# ---------------------------------------------------------------------------
-# Adjacency matrix models
-# ---------------------------------------------------------------------------
-
+# Adjacency Matrix
 class AdjacencyMatrixRequest(BaseModel):
     method: str = "pearson"
     max_pval: float = 0.05
 
-
-class EdgeResponse(BaseModel):
+class Edge(BaseModel):
     source: str
     target: str
     correlation: float
     p_value: float
-    mean_delta_ms: float
-    std_delta_ms: float
-    max_delta_ms: float
-    min_delta_ms: float
+    mean_delta_ms: float | None
+    std_delta_ms: float | None
+    max_delta_ms: float | None
+    min_delta_ms: float | None
     sample_count: int
-
 
 class AdjacencyMatrixResponse(BaseModel):
     run_id: str
     method: str
     max_pval: float
-    edge_count: int
-    edges: list[EdgeResponse]
+    edges: list[Edge]
     root_events: list[str]
 
 

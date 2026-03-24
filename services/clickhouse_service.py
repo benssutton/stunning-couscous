@@ -6,7 +6,7 @@ from uuid import UUID
 import polars as pl
 from clickhouse_connect.driver.client import Client
 
-from services.inference import Edge
+from schemas.models import Edge
 from schemas.models import Event
 
 logger = logging.getLogger(__name__)
@@ -149,10 +149,10 @@ CREATE TABLE IF NOT EXISTS {database}.adjacency_edges (
     target          LowCardinality(String),
     correlation     Float64,
     p_value         Float64,
-    mean_delta_ms   Float64,
-    std_delta_ms    Float64,
-    max_delta_ms    Float64,
-    min_delta_ms    Float64,
+    mean_delta_ms   Nullable(Float64),
+    std_delta_ms    Nullable(Float64),
+    max_delta_ms    Nullable(Float64),
+    min_delta_ms    Nullable(Float64),
     sample_count    UInt64
 ) ENGINE = MergeTree()
 ORDER BY (run_id, source, target)
@@ -160,12 +160,12 @@ ORDER BY (run_id, source, target)
 
 
 class ClickHouseService:
-    def __init__(self, client: Client, database: str = "argus"):
+    def __init__(self, client: Client, database: str = "arestor"):
         self.client = client
         self.database = database
 
     def ensure_table(self) -> None:
-        """Create the argus database and events table if they don't exist."""
+        """Create the arestor database and events table if they don't exist."""
         self.client.command(f"CREATE DATABASE IF NOT EXISTS {self.database}")
         self.client.command(CREATE_EVENTS_TABLE_SQL.format(database=self.database))
         # Add chain_id column to existing tables that lack it
@@ -194,6 +194,12 @@ class ClickHouseService:
     def ensure_classifier_model_table(self) -> None:
         """Create the classifier_model table if it doesn't exist."""
         self.client.command(CREATE_CLASSIFIER_MODEL_TABLE_SQL.format(database=self.database))
+
+    def truncate_events(self) -> int:
+        """Truncate the events table. Returns the row count before truncation."""
+        count = self.client.query(f"SELECT count() FROM {self.database}.events").result_rows[0][0]
+        self.client.command(f"TRUNCATE TABLE {self.database}.events")
+        return count
 
     def insert_event(self, event: Event, chain_id: str = "") -> None:
         """Insert a single event into ClickHouse."""
@@ -295,6 +301,12 @@ class ClickHouseService:
             "max_pval": meta["max_pval"],
             "edges": edges,
         }
+
+    def truncate_adjacency(self) -> int:
+        """Truncate the adjacency_edges table. Returns the row count before truncation."""
+        count = self.client.query(f"SELECT count() FROM {self.database}.adjacency_edges").result_rows[0][0]
+        self.client.command(f"TRUNCATE TABLE IF EXISTS {self.database}.adjacency_edges")
+        return count
 
     def insert_adjacency_result(
         self,

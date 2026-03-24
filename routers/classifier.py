@@ -19,7 +19,6 @@ async def get_classifier(
         method_results={},
     )
 
-
 @router.post("/classifier")
 async def post_classifier(
     request: ClassifierResponse,

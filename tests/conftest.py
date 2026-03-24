@@ -125,7 +125,7 @@ def clickhouse_service(clickhouse_container):
         username=clickhouse_container.username,
         password=clickhouse_container.password,
     )
-    svc = ClickHouseService(ch_client, database="argus")
+    svc = ClickHouseService(ch_client, database="arestor")
     svc.ensure_table()
     svc.ensure_adjacency_table()
     svc.ensure_profiles_table()
@@ -158,10 +158,10 @@ def _flush_redis_between_tests(request):
     _ensure_index_sync(sync_r)
     ch_svc = request.getfixturevalue("clickhouse_service")
     ch_svc.client.command(
-        "TRUNCATE TABLE IF EXISTS argus.events"
+        "TRUNCATE TABLE IF EXISTS arestor.events"
     )
     ch_svc.client.command(
-        "TRUNCATE TABLE IF EXISTS argus.adjacency_edges"
+        "TRUNCATE TABLE IF EXISTS arestor.adjacency_edges"
     )
     yield
 

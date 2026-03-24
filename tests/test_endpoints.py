@@ -4,10 +4,10 @@ from tests.data_simulation import DataSimulator
 
 pytestmark = pytest.mark.asyncio(loop_scope="session")
 
-async def test_full_pipeline(client, redis_service):
+async def test_full_pipeline(client):
 
     # 1. Generate simulated events
-    simulator = DataSimulator(num_intervals=1, seed=42)
+    simulator = DataSimulator(num_intervals=10, seed=42)
     num_chains, events = simulator.generate(prefix="full_")
 
     # 2. POST all events — no predictor, so no termination
@@ -37,14 +37,14 @@ async def test_full_pipeline(client, redis_service):
     # 5. Train: compute adjacency matrix then run classifier
     resp = await client.get("/adjacency_matrix")
     assert resp.status_code == 200
-    assert resp.json()["edge_count"] == 0
+    assert len(resp.json()["edges"]) == 0
 
     resp = await client.put("/adjacency_matrix", json={})
     assert resp.status_code == 200
 
     resp = await client.get("/adjacency_matrix")
     assert resp.status_code == 200
-    assert resp.json()["edge_count"] == 8
+    assert len(resp.json()["edges"]) == 8
 
     resp = await client.put("/classifier", json={})
     assert resp.status_code == 200

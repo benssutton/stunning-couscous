@@ -10,7 +10,7 @@ import polars as pl
 from sklearn.tree import DecisionTreeClassifier as SklearnDT
 
 from services.clickhouse_service import ClickHouseService
-from services.inference import Edge
+from schemas.models import Edge
 from schemas.models import (
     ClassifierResult,
     FeatureImportance,
@@ -98,6 +98,7 @@ class ClassificationMethod(Protocol):
     def predict(self, features: pl.DataFrame) -> list[int]: ...
     def feature_importances(self) -> list[FeatureImportance]: ...
 
+
 class TreeClassifier:
     """sklearn DecisionTreeClassifier wrapper."""
 
@@ -164,7 +165,8 @@ class ChainClassifier:
         profiles, chain_labels = self._discover_profiles(matrix)
         self._identify_terminals(profiles, edges)
 
-        features, labels = self._build_feature_matrix(matrix, chain_labels)
+        all_terminals = frozenset().union(*(p.terminal_nodes for p in profiles))
+        features, labels = self._build_feature_matrix(matrix, chain_labels, exclude_events=all_terminals)
 
         methods_to_run = (
             {method: self.methods[method]} if method else self.methods
@@ -285,6 +287,7 @@ class ChainClassifier:
         self,
         matrix: pl.DataFrame,
         chain_labels: pl.DataFrame,
+        exclude_events: frozenset[str] = frozenset(),
     ) -> tuple[pl.DataFrame, pl.Series]:
         """Build a binary feature matrix from event presence and chain features.
 
@@ -294,7 +297,7 @@ class ChainClassifier:
 
         Returns (features_df, labels_series).
         """
-        event_cols = [c for c in matrix.columns if c != "chain_id"]
+        event_cols = [c for c in matrix.columns if c != "chain_id" and c not in exclude_events]
 
         # Event presence features
         event_features = matrix.select(

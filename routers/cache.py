@@ -11,6 +11,7 @@ router = APIRouter()
 async def get_event_chain_keys(
     redis_svc: RedisService = Depends(get_redis_service),
 ):
+    """Get all event chain keys in the cache."""
     keys = await redis_svc.get_all_chain_keys()
     return {"count": len(keys), "keys": keys}
 
@@ -19,6 +20,7 @@ async def get_event_chain_keys(
 async def delete_event_chain_keys(
     redis_svc: RedisService = Depends(get_redis_service),
 ):
+    """Delete all event chain keys in the cache."""
     deleted = await redis_svc.delete_all_chains()
     return {"deleted": deleted}
 
@@ -28,7 +30,7 @@ async def load_cache(
     redis_svc: RedisService = Depends(get_redis_service),
     ch_svc: ClickHouseService = Depends(get_clickhouse_service),
 ):
-    """Load non-terminated event chains from ClickHouse into Redis."""
+    """Re-load non-terminated event chains from the persistent store into the cache."""
     all_chains = ch_svc.query_chains_for_cache()
 
     # Filter to non-terminated chains using the predictor or profiles
