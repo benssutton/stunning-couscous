@@ -12,7 +12,7 @@ from redis.commands.search.index_definition import IndexDefinition, IndexType
 from schemas.models import Event, PathProfile
 
 if TYPE_CHECKING:
-    from services.chain_classifier import ChainProfilePredictor
+    from services.chain_classifier_service import ChainClassifier
 
 logger = logging.getLogger(__name__)
 
@@ -148,12 +148,14 @@ class RedisService:
     KEY_BASE = "arestor:ec"
     STREAM_NAME = "arestor:ecstream"
     CHAIN_TTL_SECONDS = 600  # 10-minute TTL for stale chain protection
+    TERMINATED_TTL_SECONDS = 30  # Grace window for late-arriving events after termination
 
     def __init__(self, pool: aioredis.ConnectionPool):
         self.r = aioredis.Redis(connection_pool=pool)
         self.expected_events: set[str] = set()
         self.path_profiles: list[PathProfile] = []
-        self._predictor: ChainProfilePredictor | None = None
+        self._terminal_event_names: set[str] = set()
+        self._predictor: ChainClassifier | None = None
         self._merge_script = self.r.register_script(_LUA_CHAIN_MERGE)
 
     def _create_key(self) -> str:
@@ -186,8 +188,13 @@ class RedisService:
     def set_path_profiles(self, profiles: list[PathProfile]) -> None:
         """Set path profiles for profile-aware completeness/termination."""
         self.path_profiles = profiles
+        self._terminal_event_names = {
+            node
+            for p in profiles
+            for node in (p.terminal_nodes or set())
+        }
 
-    def set_predictor(self, predictor: ChainProfilePredictor) -> None:
+    def set_predictor(self, predictor: ChainClassifier) -> None:
         """Set the fitted classifier for runtime profile prediction."""
         self._predictor = predictor
 
@@ -249,7 +256,10 @@ class RedisService:
                 chain_id, chain_json, concat_refs, event_timestamp
             )
 
-        # Termination check
+        # Termination check — skip entirely if this event is not a terminal node
+        if self._terminal_event_names and event.EventName not in self._terminal_event_names:
+            return chain_id
+
         all_events = set(json.loads(events_json)) if events_json else set()
         if all_events:
             chain_ctx_keys: set[str] = set()
@@ -258,7 +268,7 @@ class RedisService:
                 chain_ctx_keys = set(chain_data.get("context", {}).keys())
             all_ctx_keys = chain_ctx_keys | set(event.Context.keys())
             if self._should_terminate(event.EventName, all_events, all_ctx_keys):
-                await self.r.delete(chain_id)
+                await self.r.expire(chain_id, self.TERMINATED_TTL_SECONDS)
 
         return chain_id
 
@@ -298,18 +308,9 @@ class RedisService:
 
         # Predict profile from non-terminal features
         profile = self._predictor.predict(non_terminal_events, context_keys)
-        if profile.profile_id == 1:
-            pass
-        if 'juice' in context_keys:
-            pass
+
         if profile is None or not profile.terminal_nodes:
             return False
-        # Terminate if chain has all terminal nodes of the predicted profile
-        if current_event_name == "J":
-            pass
-        
-        if profile.terminal_nodes <= all_events:
-            pass
 
         return profile.terminal_nodes <= all_events
 
@@ -453,7 +454,7 @@ class RedisService:
             chain_ctx_keys = set(chain_json.get("context", {}).keys())
             all_ctx_keys = chain_ctx_keys | set(context.keys())
             if self._should_terminate(current_event_name, all_events, all_ctx_keys):
-                p.delete(chain_id_this)
+                p.expire(chain_id_this, self.TERMINATED_TTL_SECONDS)
 
             p.xadd(
                 self.STREAM_NAME,
@@ -465,48 +466,6 @@ class RedisService:
 
         await p.execute()
         return chain_id
-
-    async def get_all_chain_keys(self) -> list[str]:
-        """Return all event chain JSON document keys (excluding index and stream)."""
-        result: list[str] = []
-        async for k in self.r.scan_iter(match=f"{self.KEY_BASE}:*"):
-            s = k.decode() if isinstance(k, bytes) else str(k)
-            if s.endswith(":ecstream") or ":idx" in s:
-                continue
-            result.append(s)
-        return result
-
-    async def get_all_chains(self) -> list[dict]:
-        """Fetch all event chain JSON documents from Redis."""
-        keys = await self.get_all_chain_keys()
-        if not keys:
-            return []
-        docs = await self.r.json().mget(keys, "$")
-        return [doc[0] for doc in docs if doc]
-
-    async def delete_all_chains(self) -> int:
-        """Delete all event chain keys and the stream. Returns count deleted."""
-        keys = await self.get_all_chain_keys()
-        if not keys:
-            return 0
-        p = self.r.pipeline()
-        for key in keys:
-            p.delete(key)
-        p.delete(self.STREAM_NAME)
-        results = await p.execute()
-        return sum(1 for r in results if r)
-
-    async def load_chains(self, chains: list[dict]) -> int:
-        """Bulk-load chain documents into Redis. Returns count loaded."""
-        if not chains:
-            return 0
-        p = self.r.pipeline()
-        for chain in chains:
-            key = self._create_key()
-            p.json().set(key, "$", chain)
-            p.expire(key, self.CHAIN_TTL_SECONDS)
-        await p.execute()
-        return len(chains)
 
     async def _create_new_chain(
         self,

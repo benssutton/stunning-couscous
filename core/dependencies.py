@@ -6,7 +6,8 @@ import redis.asyncio as aioredis
 from pydantic_settings import BaseSettings
 
 from services.adjacency_service import AdjacencyService
-from services.chain_classifier import ChainProfilePredictor
+from services.cache_service import CacheService
+from services.chain_classifier_service import ChainClassifier
 from services.clickhouse_service import ClickHouseBatchWriter, ClickHouseService
 from services.redis_service import RedisService
 
@@ -28,6 +29,7 @@ settings = Settings()
 _redis_service: RedisService | None = None
 _clickhouse_service: ClickHouseService | None = None
 _adjacency_service: AdjacencyService | None = None
+_cache_service: CacheService | None = None
 _batch_writer: ClickHouseBatchWriter | None = None
 _redis_pool: aioredis.ConnectionPool | None = None
 _clickhouse_client = None
@@ -36,7 +38,7 @@ _clickhouse_client = None
 @asynccontextmanager
 async def lifespan(app):
     """FastAPI lifespan: create connections on startup, close on shutdown."""
-    global _redis_service, _clickhouse_service, _adjacency_service, _batch_writer, _redis_pool, _clickhouse_client
+    global _redis_service, _clickhouse_service, _adjacency_service, _cache_service, _batch_writer, _redis_pool, _clickhouse_client
 
     # Redis
     _redis_pool = aioredis.BlockingConnectionPool(
@@ -48,6 +50,7 @@ async def lifespan(app):
     )
     _redis_service = RedisService(_redis_pool)
     await _redis_service.ensure_index()
+    _cache_service = CacheService(_redis_service)
     logger.info("Redis connected and index ensured")
 
     # ClickHouse
@@ -88,7 +91,7 @@ async def lifespan(app):
     # Load persisted classifier model
     model_bytes = _clickhouse_service.query_classifier_model()
     if model_bytes:
-        predictor = ChainProfilePredictor.deserialize(model_bytes)
+        predictor = ChainClassifier.deserialize(model_bytes)
         _redis_service.set_predictor(predictor)
         logger.info("Loaded classifier model with %d profiles", len(predictor.profiles))
 
@@ -124,3 +127,8 @@ def get_batch_writer() -> ClickHouseBatchWriter:
 def get_adjacency_service() -> AdjacencyService:
     assert _adjacency_service is not None, "Adjacency service not initialized"
     return _adjacency_service
+
+
+def get_cache_service() -> CacheService:
+    assert _cache_service is not None, "Cache service not initialized"
+    return _cache_service

@@ -6,29 +6,31 @@ from fastapi import APIRouter, Depends, Query
 from schemas.models import Event
 from services.clickhouse_service import ClickHouseBatchWriter, ClickHouseService
 from services.data_simulator import DataSimulator
-from services.dependencies import get_batch_writer, get_clickhouse_service, get_redis_service
+from core.dependencies import get_batch_writer, get_clickhouse_service, get_redis_service
 from services.redis_service import RedisService
 
 router = APIRouter()
 
 
-@router.delete("/events")
+@router.delete("/events",
+               summary="Delete all events")
 async def delete_events(
     ch_svc: ClickHouseService = Depends(get_clickhouse_service),
 ):
-    """Delete all telemetry events from Arestor."""
     deleted = ch_svc.truncate_events()
     return {"deleted": deleted}
 
 
-@router.post("/events/simulation", status_code=201)
+@router.post("/events/simulation", status_code=201,
+             summary="Generate and ingest simulated telemetry events",
+             description="Generates simulated events for the number of seconds specified "\
+                "and saves these")
 async def simulate_events(
     num_intervals: int = Query(default=10, ge=1),
     seed: int | None = Query(default=None),
     redis_svc: RedisService = Depends(get_redis_service),
     batch_writer: ClickHouseBatchWriter = Depends(get_batch_writer),
 ):
-    """Generate and ingest simulated telemetry events."""
     start_time = time.perf_counter_ns()
     run_prefix = datetime.now(timezone.utc).strftime("%y%m%d%H%M%S") + "_"
     num_chains, raw_events = DataSimulator(num_intervals=num_intervals, seed=seed).generate(prefix=run_prefix)
@@ -48,13 +50,13 @@ async def simulate_events(
     return {"event_count": len(raw_events), "chain_count": num_chains, "total_time_ms": total_time_ms}
 
 
-@router.post("/events", status_code=201)
+@router.post("/events", status_code=201,
+             summary="Save a list of telemetry events")
 async def receive_event(
     events: list[Event],
     redis_svc: RedisService = Depends(get_redis_service),
     batch_writer: ClickHouseBatchWriter = Depends(get_batch_writer),
 ):
-    """Save a list of telemetry events in Arestor."""
     results = []
     for event in events:
         chain_id = await redis_svc.add_or_merge_event(event)

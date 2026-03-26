@@ -1,19 +1,29 @@
+# Web service dependencies
 uvicorn
 fastapi
+pydantic
+pydantic-settings
 httpx
+
+# Cache and DB dependencies
 redis
 clickhouse-connect
-polars
-pandas
+
+# Data analysis and modelling dependencies
+ulid-py
 numpy
+pandas
+polars
+polars-ds
 scipy
 scikit-learn
 joblib
+
+# Visualisation dependencies (Jupyter Notebook Only)
 plotly
 ipycytoscape
-ulid-py
-pydantic
-pydantic-settings
+
+# Test dependencies
 pytest
 pytest-asyncio
 pytest-cov

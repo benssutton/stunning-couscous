@@ -1,17 +1,11 @@
 import polars as pl
 import pytest
 
-from services.chain_classifier import (
-    ChainClassifier,
+from services.chain_classifier_service import (
+    ChainClassifierService,
     TreeClassifier,
 )
-from services.inference import Edge
-from schemas.models import PathProfile
-
-
-# ---------------------------------------------------------------------------
-# Fixtures
-# ---------------------------------------------------------------------------
+from schemas.models import Edge, PathProfile
 
 @pytest.fixture
 def edges() -> list[Edge]:
@@ -34,7 +28,6 @@ def edges() -> list[Edge]:
         Edge(source="H", target="J", correlation=0.92, p_value=0.001,
              mean_delta_ms=100, std_delta_ms=10, max_delta_ms=120, min_delta_ms=80, sample_count=50),
     ]
-
 
 @pytest.fixture
 def timestamp_matrix() -> pl.DataFrame:
@@ -64,17 +57,15 @@ def timestamp_matrix() -> pl.DataFrame:
     return pl.DataFrame(rows)
 
 
-# ---------------------------------------------------------------------------
 # Profile discovery tests
-# ---------------------------------------------------------------------------
 
 class TestDiscoverProfiles:
     def test_discovers_two_profiles(self, timestamp_matrix):
-        profiles, chain_labels = ChainClassifier._discover_profiles(timestamp_matrix)
+        profiles, chain_labels = ChainClassifierService._discover_profiles(timestamp_matrix)
         assert len(profiles) == 2
 
     def test_profile_node_sets(self, timestamp_matrix):
-        profiles, _ = ChainClassifier._discover_profiles(timestamp_matrix)
+        profiles, _ = ChainClassifierService._discover_profiles(timestamp_matrix)
         node_sets = {frozenset(p.node_set) for p in profiles}
         expected_full = frozenset("ABCDEFGHJ")
         expected_partial = frozenset("ABCDEFGH")
@@ -82,24 +73,22 @@ class TestDiscoverProfiles:
         assert expected_partial in node_sets
 
     def test_profile_counts(self, timestamp_matrix):
-        profiles, _ = ChainClassifier._discover_profiles(timestamp_matrix)
+        profiles, _ = ChainClassifierService._discover_profiles(timestamp_matrix)
         by_count = {p.chain_count: p for p in profiles}
         assert 5 in by_count  # each profile has 5 chains
 
     def test_profile_fractions_sum_to_one(self, timestamp_matrix):
-        profiles, _ = ChainClassifier._discover_profiles(timestamp_matrix)
+        profiles, _ = ChainClassifierService._discover_profiles(timestamp_matrix)
         total = sum(p.fraction for p in profiles)
         assert abs(total - 1.0) < 1e-9
 
     def test_chain_labels_match(self, timestamp_matrix):
-        profiles, chain_labels = ChainClassifier._discover_profiles(timestamp_matrix)
+        profiles, chain_labels = ChainClassifierService._discover_profiles(timestamp_matrix)
         assert chain_labels.height == timestamp_matrix.height
         assert set(chain_labels.columns) == {"chain_id", "profile_id"}
 
 
-# ---------------------------------------------------------------------------
 # Terminal node identification tests
-# ---------------------------------------------------------------------------
 
 class TestIdentifyTerminals:
     def test_terminals_with_j(self, edges):
@@ -109,7 +98,7 @@ class TestIdentifyTerminals:
             chain_count=5,
             fraction=0.5,
         )
-        ChainClassifier._identify_terminals([profile], edges)
+        ChainClassifierService._identify_terminals([profile], edges)
         assert profile.terminal_nodes == frozenset({"D", "F", "G", "J"})
 
     def test_terminals_without_j(self, edges):
@@ -119,7 +108,7 @@ class TestIdentifyTerminals:
             chain_count=5,
             fraction=0.5,
         )
-        ChainClassifier._identify_terminals([profile], edges)
+        ChainClassifierService._identify_terminals([profile], edges)
         # H has no children within {A-H} (J is excluded), so H is terminal
         assert profile.terminal_nodes == frozenset({"D", "F", "G", "H"})
 
@@ -131,7 +120,7 @@ class TestIdentifyTerminals:
             chain_count=5,
             fraction=0.5,
         )
-        ChainClassifier._identify_terminals([profile], edges)
+        ChainClassifierService._identify_terminals([profile], edges)
         assert "A" not in profile.terminal_nodes
 
     def test_empty_edges(self):
@@ -142,13 +131,11 @@ class TestIdentifyTerminals:
             chain_count=1,
             fraction=1.0,
         )
-        ChainClassifier._identify_terminals([profile], [])
+        ChainClassifierService._identify_terminals([profile], [])
         assert profile.terminal_nodes == frozenset({"A", "B"})
 
 
-# ---------------------------------------------------------------------------
 # Classification method tests
-# ---------------------------------------------------------------------------
 
 def _make_features_and_labels() -> tuple[pl.DataFrame, pl.Series]:
     """Binary features + labels for two profiles.
@@ -171,8 +158,6 @@ def _make_features_and_labels() -> tuple[pl.DataFrame, pl.Series]:
     features = pl.DataFrame(rows)
     labels = pl.Series("profile_id", [0] * 5 + [1] * 5)
     return features, labels
-
-
 
 class TestTreeClassifier:
     def test_fit_predict_perfect(self):

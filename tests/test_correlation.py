@@ -1,8 +1,9 @@
-"""Unit tests for PearsonInference — no external services required."""
+"""Unit tests for PearsonCorrelation — no external services required."""
 
 import polars as pl
 
-from services.inference import Edge, PearsonInference
+from services.adjacency_service import PearsonCorrelation
+from schemas.models import Edge
 
 
 def _linear_chain_matrix() -> tuple[pl.DataFrame, list[str]]:
@@ -29,7 +30,7 @@ def _linear_chain_matrix() -> tuple[pl.DataFrame, list[str]]:
 def test_linear_chain_produces_correct_edges():
     """A->B->C chain should infer edges A->B and B->C (or A->C)."""
     matrix, labels = _linear_chain_matrix()
-    inf = PearsonInference()
+    inf = PearsonCorrelation()
     edges = inf.infer(matrix, labels, max_pval=0.05)
 
     targets = {e.target for e in edges}
@@ -54,7 +55,7 @@ def test_single_event_is_root():
         "chain_id": ["c1", "c2", "c3"],
         "X": [100.0, 200.0, 300.0],
     })
-    inf = PearsonInference()
+    inf = PearsonCorrelation()
     edges = inf.infer(df, ["X"], max_pval=0.05)
     assert edges == []
 
@@ -66,7 +67,7 @@ def test_temporal_violation_no_edge():
         "A": [100.0, 200.0, 300.0, 400.0, 500.0],
         "B": [150.0, 180.0, 350.0, 380.0, 550.0],  # B < A at index 1,3
     })
-    inf = PearsonInference()
+    inf = PearsonCorrelation()
     edges = inf.infer(df, ["A", "B"], max_pval=0.05)
     # Neither direction should produce an edge since both violate ordering
     assert edges == []
@@ -83,7 +84,7 @@ def test_edge_latency_stats():
         "A": a,
         "B": b,
     })
-    inf = PearsonInference()
+    inf = PearsonCorrelation()
     edges = inf.infer(df, ["A", "B"], max_pval=0.05)
 
     assert len(edges) == 1
@@ -103,7 +104,7 @@ def test_null_values_handled():
         "A": [100.0, 200.0, None, 400.0, 500.0],
         "B": [150.0, None, None, 450.0, 550.0],
     })
-    inf = PearsonInference()
+    inf = PearsonCorrelation()
     # Should not raise — nulls are dropped
     edges = inf.infer(df, ["A", "B"], max_pval=0.05)
     # Only 3 valid pairs (indices 0, 3, 4) — may or may not produce edge

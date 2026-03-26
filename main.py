@@ -1,4 +1,4 @@
-from services.dependencies import lifespan
+from core.dependencies import lifespan
 from fastapi import FastAPI
 
 from routers import adjacency, cache, chains, classifier, events

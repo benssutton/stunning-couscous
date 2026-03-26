@@ -18,10 +18,12 @@ from testcontainers.redis import RedisContainer
 
 from main import app
 from services.adjacency_service import AdjacencyService
+from services.cache_service import CacheService
 from services.clickhouse_service import ClickHouseBatchWriter, ClickHouseService
-from services.dependencies import (
+from core.dependencies import (
     get_adjacency_service,
     get_batch_writer,
+    get_cache_service,
     get_clickhouse_service,
     get_redis_service,
 )
@@ -170,6 +172,7 @@ def _flush_redis_between_tests(request):
 def client(redis_service, clickhouse_service, batch_writer):
     """Async httpx client with real Redis Stack + real ClickHouse."""
     adjacency_service = AdjacencyService(clickhouse_service)
+    cache_service = CacheService(redis_service)
     app.dependency_overrides[get_redis_service] = (
         lambda: redis_service
     )
@@ -181,6 +184,9 @@ def client(redis_service, clickhouse_service, batch_writer):
     )
     app.dependency_overrides[get_batch_writer] = (
         lambda: batch_writer
+    )
+    app.dependency_overrides[get_cache_service] = (
+        lambda: cache_service
     )
     transport = httpx.ASGITransport(app=app)
     c = httpx.AsyncClient(

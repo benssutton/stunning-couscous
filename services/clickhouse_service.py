@@ -6,8 +6,7 @@ from uuid import UUID
 import polars as pl
 from clickhouse_connect.driver.client import Client
 
-from schemas.models import Edge
-from schemas.models import Event
+from schemas.models import Edge, Event, FeatureImportance, MethodResult
 
 logger = logging.getLogger(__name__)
 
@@ -133,8 +132,13 @@ ORDER BY (profile_id)
 
 CREATE_CLASSIFIER_MODEL_TABLE_SQL = """
 CREATE TABLE IF NOT EXISTS {database}.classifier_model (
-    computed_at     DateTime64(3) DEFAULT now64(3),
-    model_bytes     String
+    computed_at          DateTime64(3) DEFAULT now64(3),
+    model_bytes          String,
+    model_name           LowCardinality(String) DEFAULT '',
+    model_params         String DEFAULT '{{}}',
+    feature_importances  Array(Tuple(String, Float64)) DEFAULT [],
+    method_name          LowCardinality(String) DEFAULT '',
+    accuracy             Float64 DEFAULT 0
 ) ENGINE = MergeTree()
 ORDER BY (computed_at)
 """
@@ -194,6 +198,20 @@ class ClickHouseService:
     def ensure_classifier_model_table(self) -> None:
         """Create the classifier_model table if it doesn't exist."""
         self.client.command(CREATE_CLASSIFIER_MODEL_TABLE_SQL.format(database=self.database))
+        for col_ddl in (
+            f"ALTER TABLE {self.database}.classifier_model"
+            f" ADD COLUMN IF NOT EXISTS model_name LowCardinality(String) DEFAULT ''",
+            f"ALTER TABLE {self.database}.classifier_model"
+            f" ADD COLUMN IF NOT EXISTS model_params String DEFAULT '{{}}'",
+            f"ALTER TABLE {self.database}.classifier_model"
+            f" ADD COLUMN IF NOT EXISTS feature_importances"
+            f" Array(Tuple(String, Float64)) DEFAULT []",
+            f"ALTER TABLE {self.database}.classifier_model"
+            f" ADD COLUMN IF NOT EXISTS method_name LowCardinality(String) DEFAULT ''",
+            f"ALTER TABLE {self.database}.classifier_model"
+            f" ADD COLUMN IF NOT EXISTS accuracy Float64 DEFAULT 0",
+        ):
+            self.client.command(col_ddl)
 
     def truncate_events(self) -> int:
         """Truncate the events table. Returns the row count before truncation."""
@@ -414,8 +432,16 @@ class ClickHouseService:
             for row in df.iter_rows(named=True)
         ]
 
-    def insert_classifier_model(self, model_bytes: bytes) -> None:
-        """Truncate and insert the serialized classifier model."""
+    def insert_classifier_model(
+        self,
+        model_bytes: bytes,
+        model_name: str = "",
+        model_params: str = "{}",
+        feature_importances: list[tuple[str, float]] | None = None,
+        method_name: str = "",
+        accuracy: float = 0.0,
+    ) -> None:
+        """Truncate and insert the serialized classifier model with metadata."""
         import base64
 
         self.client.command(
@@ -424,8 +450,9 @@ class ClickHouseService:
         encoded = base64.b64encode(model_bytes).decode("ascii")
         self.client.insert(
             f"{self.database}.classifier_model",
-            [[encoded]],
-            column_names=["model_bytes"],
+            [[encoded, model_name, model_params, feature_importances or [], method_name, accuracy]],
+            column_names=["model_bytes", "model_name", "model_params", "feature_importances", "method_name", "accuracy"],
+            settings={"async_insert": 0, "wait_for_async_insert": 1},
         )
 
     def query_chains_for_cache(self) -> list[dict]:
@@ -484,3 +511,27 @@ class ClickHouseService:
             return None
         encoded = df.row(0)[0]
         return base64.b64decode(encoded)
+
+    def query_classifier_model_metadata(self) -> MethodResult | None:
+        """Load the most recent classifier model metadata (no binary blob)."""
+        query = (
+            f"SELECT method_name, accuracy, feature_importances "
+            f"FROM {self.database}.classifier_model "
+            f"ORDER BY computed_at DESC LIMIT 1"
+        )
+        try:
+            result = self.client.query(query)
+        except Exception:
+            return None
+        if not result.result_rows:
+            return None
+        method_name, accuracy, raw_importances = result.result_rows[0]
+        feature_importances = [
+            FeatureImportance(feature_name=name, importance=importance)
+            for name, importance in raw_importances
+        ]
+        return MethodResult(
+            method=method_name,
+            accuracy=accuracy,
+            feature_importances=feature_importances,
+        )

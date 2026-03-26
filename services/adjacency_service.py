@@ -1,11 +1,6 @@
-"""Orchestrates adjacency matrix computation: query -> infer -> persist."""
-
-from __future__ import annotations
-
 from uuid import uuid4
 import math
-from typing import Protocol
-#from pydantic import BaseModel
+from abc import ABC, abstractmethod
 import polars as pl
 import polars_ds as pds
 from scipy.stats import t as t_dist
@@ -16,8 +11,8 @@ from schemas.models import Edge, AdjacencyMatrixResponse
 class AdjacencyService:
     def __init__(self, ch_svc: ClickHouseService):
         self.ch_svc = ch_svc
-        self.methods: dict[str, InferenceMethod] = {
-            "pearson": PearsonInference(),
+        self.methods: dict[str, CorrelationMethod] = {
+            "pearson": PearsonCorrelation(),
         }
 
     @staticmethod
@@ -54,27 +49,20 @@ class AdjacencyService:
 
         Raises KeyError if the method is not registered.
         """
-        inference = self.methods[method]  # KeyError if unknown
+        correlation = self.methods[method]  # KeyError if unknown
 
         matrix = self.ch_svc.query_timestamp_matrix()
         event_labels = [c for c in matrix.columns if c != "chain_id"]
 
-        edges = inference.infer(matrix, event_labels, max_pval)
+        edges = correlation.infer(matrix, event_labels, max_pval)
 
         run_id = uuid4()
         self.ch_svc.insert_adjacency_result(run_id, edges, method, max_pval)
         return self._build_response(str(run_id), method, max_pval, edges)
 
 
-"""Inference methods for event dependency tree discovery.
-
-The InferenceMethod protocol defines the interface.  Implementations receive a
-wide-format Polars DataFrame (rows = chains, columns = event timestamps as
-float64 ms) and return a list of Edge dataclasses describing the inferred
-dependency graph.
-"""
-
-class InferenceMethod(Protocol):
+class CorrelationMethod(ABC):
+    @abstractmethod
     def infer(
         self,
         matrix: pl.DataFrame,
@@ -83,15 +71,11 @@ class InferenceMethod(Protocol):
     ) -> list[Edge]: ...
 
 
-class PearsonInference:
-    """Pearson correlation-based dependency inference.
-
-    Ported from notebook cells 17-18.  For each ordered pair (event, dependency):
-      1. Drop rows where either timestamp is null.
-      2. Verify temporal ordering — every instance of event >= dependency.
-      3. Compute Pearson correlation via polars-ds.
-      4. Accept only if one-tailed p-value < max_pval.
-    Then for each event pick the dependency with the highest correlation.
+class PearsonCorrelation(CorrelationMethod):
+    """Infers an adjacency matrix from observed event chains
+       using Person Correlation to determine which events most
+       closely correlate (i.e. are adjacent to each other in the 
+       event tree/graph).
     """
 
     def infer(

@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+import json
 import logging
 from collections import defaultdict
-from typing import Protocol
+from abc import ABC, abstractmethod
 
 import joblib
 import numpy as np
@@ -20,124 +21,7 @@ from schemas.models import (
 
 logger = logging.getLogger(__name__)
 
-
-# ---------------------------------------------------------------------------
-# Runtime predictor — wraps a fitted sklearn model for chain profile lookup
-# ---------------------------------------------------------------------------
-
-class ChainProfilePredictor:
-    """Lightweight wrapper around a fitted sklearn model for runtime prediction.
-
-    Given a chain's current events and context keys, predicts which
-    PathProfile the chain belongs to.  Serializable via joblib for
-    persistence in ClickHouse.
-    """
-
-    def __init__(
-        self,
-        model: SklearnDT,
-        feature_names: list[str],
-        profiles: dict[int, PathProfile],
-    ) -> None:
-        self._model = model
-        self._feature_names = feature_names
-        self._profiles = profiles
-        # Pre-compute index lookups for O(events + ctx) prediction
-        self._event_indices: dict[str, int] = {}
-        self._ctx_indices: dict[str, int] = {}
-        for i, name in enumerate(feature_names):
-            if name.startswith("event:"):
-                self._event_indices[name[6:]] = i
-            elif name.startswith("ctx:"):
-                self._ctx_indices[name[4:]] = i
-
-    @property
-    def profiles(self) -> dict[int, PathProfile]:
-        return self._profiles
-
-    def predict(self, events: set[str], context_keys: set[str]) -> PathProfile | None:
-        """Predict the single best-matching profile for a chain.
-
-        Builds a binary feature vector from the chain's current state
-        and runs it through the fitted decision tree.
-        """
-        features = np.zeros(len(self._feature_names), dtype=np.int8)
-        for event in events:
-            idx = self._event_indices.get(event)
-            if idx is not None:
-                features[idx] = 1
-        for ctx_key in context_keys:
-            idx = self._ctx_indices.get(ctx_key)
-            if idx is not None:
-                features[idx] = 1
-        pred = int(self._model.predict(features.reshape(1, -1))[0])
-        return self._profiles.get(pred)
-
-    def serialize(self) -> bytes:
-        """Serialize the entire predictor to bytes via joblib."""
-        import io
-
-        buf = io.BytesIO()
-        joblib.dump(self, buf)
-        return buf.getvalue()
-
-    @staticmethod
-    def deserialize(data: bytes) -> ChainProfilePredictor:
-        """Deserialize a predictor from joblib bytes."""
-        import io
-
-        return joblib.load(io.BytesIO(data))
-
-
-# ---------------------------------------------------------------------------
-# Classification method protocol + implementations
-# ---------------------------------------------------------------------------
-
-class ClassificationMethod(Protocol):
-    def fit(self, features: pl.DataFrame, labels: pl.Series) -> None: ...
-    def predict(self, features: pl.DataFrame) -> list[int]: ...
-    def feature_importances(self) -> list[FeatureImportance]: ...
-
-
-class TreeClassifier:
-    """sklearn DecisionTreeClassifier wrapper."""
-
-    def __init__(self, max_depth: int = 5, min_samples_leaf: int = 10) -> None:
-        self._max_depth = max_depth
-        self._min_samples_leaf = min_samples_leaf
-        self._tree: SklearnDT | None = None
-        self._feature_names: list[str] = []
-
-    def fit(self, features: pl.DataFrame, labels: pl.Series) -> None:
-        self._feature_names = features.columns
-        self._tree = SklearnDT(
-            max_depth=self._max_depth,
-            min_samples_leaf=self._min_samples_leaf,
-        )
-        self._tree.fit(features.to_numpy(), labels.to_numpy())
-
-    def predict(self, features: pl.DataFrame) -> list[int]:
-        assert self._tree is not None, "TreeClassifier not fitted"
-        return self._tree.predict(features.to_numpy()).tolist()
-
-    def feature_importances(self) -> list[FeatureImportance]:
-        assert self._tree is not None, "TreeClassifier not fitted"
-        return sorted(
-            [
-                FeatureImportance(feature_name=name, importance=float(imp))
-                for name, imp in zip(self._feature_names, self._tree.feature_importances_)
-                if imp > 0
-            ],
-            key=lambda x: x.importance,
-            reverse=True,
-        )
-
-
-# ---------------------------------------------------------------------------
-# ChainClassifier orchestrator
-# ---------------------------------------------------------------------------
-
-class ChainClassifier:
+class ChainClassifierService:
     def __init__(self, ch_svc: ClickHouseService):
         self.ch_svc = ch_svc
         self.methods: dict[str, ClassificationMethod] = {
@@ -190,7 +74,7 @@ class ChainClassifier:
         self,
         profiles: list[PathProfile],
         method: str = "decision_tree",
-    ) -> ChainProfilePredictor:
+    ) -> ChainClassifier:
         """Build a runtime predictor from a fitted classification method.
 
         Must be called after ``analyze()`` so the method is already fitted.
@@ -201,11 +85,45 @@ class ChainClassifier:
                 f"build_predictor requires a TreeClassifier, got {type(clf).__name__}"
             )
         assert clf._tree is not None, "TreeClassifier not fitted — call analyze() first"
-        return ChainProfilePredictor(
+        return ChainClassifier(
             model=clf._tree,
             feature_names=clf._feature_names,
             profiles={p.profile_id: p for p in profiles},
         )
+
+    def build_and_persist_predictor(
+        self,
+        profiles: list[PathProfile],
+        method: str = "decision_tree",
+        accuracy: float = 0.0,
+    ) -> ChainClassifier | None:
+        """Build a runtime predictor, persist it to ClickHouse, and return it.
+
+        Returns None if the requested method is not available.
+        Must be called after ``analyze()`` so the method is already fitted.
+        """
+        if method not in self.methods:
+            return None
+        predictor = self.build_predictor(profiles, method=method)
+
+        clf = self.methods[method]
+        assert isinstance(clf, TreeClassifier)  # guaranteed by build_predictor
+        assert clf._tree is not None
+        model_name = type(clf._tree).__name__
+        model_params = json.dumps(clf._tree.get_params())
+        feature_importances = [
+            (fi.feature_name, fi.importance) for fi in clf.feature_importances()
+        ]
+
+        self.ch_svc.insert_classifier_model(
+            predictor.serialize(),
+            model_name=model_name,
+            model_params=model_params,
+            feature_importances=feature_importances,
+            method_name=method,
+            accuracy=accuracy,
+        )
+        return predictor
 
     # ------------------------------------------------------------------
     # Profile discovery
@@ -345,3 +263,125 @@ class ChainClassifier:
         features = features.fill_null(0)
 
         return features, labels
+
+# Runtime classifier — wraps a fitted sklearn model for chain profile lookup
+
+class ChainClassifier:
+    """Lightweight wrapper around a fitted sklearn model for runtime prediction.
+
+    Given a chain's current events and context keys, predicts which
+    PathProfile the chain belongs to.  Serializable via joblib for
+    persistence in ClickHouse.
+    """
+
+    def __init__(
+        self,
+        model: SklearnDT,
+        feature_names: list[str],
+        profiles: dict[int, PathProfile],
+    ) -> None:
+        self._model = model
+        self._feature_names = feature_names
+        self._profiles = profiles
+        # Pre-compute index lookups for O(events + ctx) prediction
+        self._event_indices: dict[str, int] = {}
+        self._ctx_indices: dict[str, int] = {}
+        for i, name in enumerate(feature_names):
+            if name.startswith("event:"):
+                self._event_indices[name[6:]] = i
+            elif name.startswith("ctx:"):
+                self._ctx_indices[name[4:]] = i
+
+    @property
+    def profiles(self) -> dict[int, PathProfile]:
+        return self._profiles
+
+    def predict(self, events: set[str], context_keys: set[str]) -> PathProfile | None:
+        """Predict the single best-matching profile for a chain.
+
+        Builds a binary feature vector from the chain's current state
+        and runs it through the fitted decision tree.
+        """
+        features = np.zeros(len(self._feature_names), dtype=np.int8)
+        for event in events:
+            idx = self._event_indices.get(event)
+            if idx is not None:
+                features[idx] = 1
+        for ctx_key in context_keys:
+            idx = self._ctx_indices.get(ctx_key)
+            if idx is not None:
+                features[idx] = 1
+        pred = int(self._model.predict(features.reshape(1, -1))[0])
+        return self._profiles.get(pred)
+
+    def serialize(self) -> bytes:
+        """Serialize the entire predictor to bytes via joblib."""
+        import io
+
+        buf = io.BytesIO()
+        joblib.dump(self, buf)
+        return buf.getvalue()
+
+    @staticmethod
+    def deserialize(data: bytes) -> ChainClassifier:
+        """Deserialize a predictor from joblib bytes."""
+        import io
+        import sys
+
+        # Alias old module name so models pickled before the rename can load
+        import services.chain_classifier_service as _this_module
+        sys.modules.setdefault("services.chain_classifier", _this_module)
+
+        return joblib.load(io.BytesIO(data))
+
+
+# Backward-compat alias for models pickled before the class was renamed
+ChainProfilePredictor = ChainClassifier
+
+
+# Classification method ABC + implementations
+
+class ClassificationMethod(ABC):
+    @abstractmethod
+    def fit(self, features: pl.DataFrame, labels: pl.Series) -> None: ...
+    @abstractmethod
+    def predict(self, features: pl.DataFrame) -> list[int]: ...
+    @abstractmethod
+    def feature_importances(self) -> list[FeatureImportance]: ...
+
+
+class TreeClassifier(ClassificationMethod):
+    """sklearn DecisionTreeClassifier wrapper."""
+
+    def __init__(self, max_depth: int = 5, min_samples_leaf: int = 10) -> None:
+        self._max_depth = max_depth
+        self._min_samples_leaf = min_samples_leaf
+        self._tree: SklearnDT | None = None
+        self._feature_names: list[str] = []
+
+    def fit(self, features: pl.DataFrame, labels: pl.Series) -> None:
+        self._feature_names = features.columns
+        self._tree = SklearnDT(
+            max_depth=self._max_depth,
+            min_samples_leaf=self._min_samples_leaf,
+        )
+        self._tree.fit(features.to_numpy(), labels.to_numpy())
+
+    def predict(self, features: pl.DataFrame) -> list[int]:
+        assert self._tree is not None, "TreeClassifier not fitted"
+        return self._tree.predict(features.to_numpy()).tolist()
+
+    def feature_importances(self) -> list[FeatureImportance]:
+        assert self._tree is not None, "TreeClassifier not fitted"
+        return sorted(
+            [
+                FeatureImportance(feature_name=name, importance=float(imp))
+                for name, imp in zip(self._feature_names, self._tree.feature_importances_)
+                if imp > 0
+            ],
+            key=lambda x: x.importance,
+            reverse=True,
+        )
+
+
+
