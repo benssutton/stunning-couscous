@@ -298,10 +298,19 @@ class RedisService:
 
         # Predict profile from non-terminal features
         profile = self._predictor.predict(non_terminal_events, context_keys)
+        if profile.profile_id == 1:
+            pass
+        if 'juice' in context_keys:
+            pass
         if profile is None or not profile.terminal_nodes:
             return False
-
         # Terminate if chain has all terminal nodes of the predicted profile
+        if current_event_name == "J":
+            pass
+        
+        if profile.terminal_nodes <= all_events:
+            pass
+
         return profile.terminal_nodes <= all_events
 
     async def _handle_conflict(
