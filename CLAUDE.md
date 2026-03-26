@@ -115,4 +115,11 @@ See `requirements.txt`
 - Redis index `arestor:ec:idx` is created by FastAPI on startup via `ensure_index()` — if the index is dropped manually, FastAPI must be restarted to recreate it
 
 ## Current Status
-Core functionality to ingest events, train classifiers, and employ classifiers has been completed. `main.py` is a FastAPI app with routers in `routers/` (events, adjacency, classifier, cache, chains). Data models are in `schemas/models.py`. Dependency injection and lifespan management are in `core/dependencies.py`. Services in `services/` include: `redis_service.py` (async, uses redis.asyncio with Lua scripting), `clickhouse_service.py` (includes `ClickHouseBatchWriter`), `adjacency_service.py`, `chain_classifier_service.py`, `cache_service.py`, and `data_simulator.py`. Adjacency matrix computation and chain path classification work end-to-end. The classifier uses `TreeClassifier` (sklearn DecisionTree) and persists a fitted model via joblib to ClickHouse along with feature importances, model name, parameters, and accuracy. At startup, the model and path profiles are loaded from ClickHouse and used to predict the matching profile for each chain, applying a draining TTL to terminated chains. REST endpoint verbs follow a convention: GET reads from ClickHouse, PUT computes/trains from source data, DELETE removes data.
+Core functionality to ingest events, infer the processing tree, group events into sub-trees and train classifiers to identify the expected sub-tree and terminal events has been completed.
+
+We are now working on calculating the expected latency between nodes in the tree and:
+a. we have just added the ability train a state model (such as a hidden markov model) to infer when latency between 2 nodes in the tree probabilistically falls outside of expected bounds which now needs testing thoroughly
+b. calculate arrival/service rates at each node and identify when transations are queuing at a particular node in the processing tree based on arival/service rates at each node.
+c. in real-time identify if the latencies between nodes in all incoming chains are either anomalous according to the state model (per a above), or if some queing was likely (per b above) and persist these assessments and stream these over websockets
+
+Anomalous events chains identified by steps c and d above should be held on the cache for a short period, say 5 minutes, and should be streamed over websockets.

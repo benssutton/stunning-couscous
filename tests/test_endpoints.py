@@ -1,4 +1,5 @@
 import asyncio
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
@@ -145,6 +146,177 @@ async def test_adjacency_operations(client):
     resp = await client.get("/adjacency_matrix")
     assert resp.status_code == 200
     assert resp.json()["run_id"] == ""
+
+async def test_latency_operations(client):
+
+    # 422 when no params provided
+    resp = await client.get("/latencies")
+    assert resp.status_code == 422
+
+    # 404 for nonexistent chain
+    resp = await client.get("/latencies", params={"chain_id": "nonexistent"})
+    assert resp.status_code == 404
+
+    # Ingest events and compute adjacency
+    simulator = DataSimulator(num_intervals=1, seed=42)
+    _, events = simulator.generate(prefix="lat_")
+    resp = await client.post("/events", json=events)
+    assert resp.status_code == 201
+
+    resp = await client.put("/adjacency_matrix", json={})
+    assert resp.status_code == 200
+    assert len(resp.json()["edges"]) > 0
+
+    # Get a chain_id from ClickHouse
+    resp = await client.get("/chains")
+    assert resp.status_code == 200
+    chains = resp.json()["chains"]
+    assert len(chains) > 0
+    chain_id = chains[0]["chain_id"]
+
+    # Lookup latencies by chain_id
+    resp = await client.get("/latencies", params={"chain_id": chain_id})
+    assert resp.status_code == 200
+    body = resp.json()
+    assert len(body) == 1
+    assert body[0]["chain_id"] == chain_id
+    assert len(body[0]["latencies"]) > 0
+    for lat in body[0]["latencies"]:
+        assert lat["delta_ms"] >= 0
+
+    # Lookup latencies by ref (use first ref from the chain)
+    ref = chains[0]["concatenatedrefs"][0]
+    resp = await client.get("/latencies", params={"ref": ref})
+    assert resp.status_code == 200
+    body = resp.json()
+    assert len(body) >= 1
+    assert len(body[0]["latencies"]) > 0
+
+    # 404 for nonexistent ref
+    resp = await client.get("/latencies", params={"ref": "nonexistent_0_1"})
+    assert resp.status_code == 404
+
+
+async def test_average_latency_operations(client):
+
+    # 422 when neither chain_id nor ref provided
+    resp = await client.get("/latencies/averages", params={"start": "2020-01-01T00:00:00"})
+    assert resp.status_code == 422
+
+    # 422 when start is missing
+    resp = await client.get("/latencies/averages", params={"chain_id": "x"})
+    assert resp.status_code == 422
+
+    # 404 for nonexistent chain
+    resp = await client.get(
+        "/latencies/averages",
+        params={"chain_id": "nonexistent", "start": "2020-01-01T00:00:00"},
+    )
+    assert resp.status_code == 404
+
+    # Ingest events, compute adjacency, train classifier
+    simulator = DataSimulator(num_intervals=2, seed=42)
+    _, events = simulator.generate(prefix="avg_")
+    start_time = datetime.now(timezone.utc) - timedelta(minutes=1)
+
+    resp = await client.post("/events", json=events)
+    assert resp.status_code == 201
+
+    resp = await client.put("/adjacency_matrix", json={})
+    assert resp.status_code == 200
+    assert len(resp.json()["edges"]) > 0
+
+    resp = await client.put("/classifier", json={})
+    assert resp.status_code == 200
+
+    # Get a chain_id
+    resp = await client.get("/chains")
+    assert resp.status_code == 200
+    chains = resp.json()["chains"]
+    assert len(chains) > 0
+    chain_id = chains[0]["chain_id"]
+
+    # GET /latencies/averages by chain_id (open-ended window)
+    resp = await client.get(
+        "/latencies/averages",
+        params={"chain_id": chain_id, "start": start_time.isoformat()},
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["chain_id"] == chain_id
+    assert body["matching_chains"] >= 1
+    assert len(body["edges"]) > 0
+    assert len(body["node_set"]) > 0
+    for edge in body["edges"]:
+        assert edge["min_ms"] <= edge["p5_ms"] <= edge["p50_ms"]
+        assert edge["p50_ms"] <= edge["p95_ms"] <= edge["max_ms"]
+        assert edge["stddev_ms"] >= 0
+        assert edge["sample_count"] >= 1
+
+    # GET /latencies/averages by ref
+    ref = chains[0]["concatenatedrefs"][0]
+    resp = await client.get(
+        "/latencies/averages",
+        params={"ref": ref, "start": start_time.isoformat()},
+    )
+    assert resp.status_code == 200
+    assert len(resp.json()["edges"]) > 0
+
+    # 404 for time window that excludes all data
+    resp = await client.get(
+        "/latencies/averages",
+        params={"chain_id": chain_id, "start": "2099-01-01T00:00:00"},
+    )
+    assert resp.status_code == 404
+
+
+async def test_state_detector_operations(client):
+
+    # 404 when no model trained
+    resp = await client.get("/state_detectors/latencies")
+    assert resp.status_code == 404
+
+    # Ingest events, compute adjacency, train classifier
+    simulator = DataSimulator(num_intervals=2, seed=42)
+    _, events = simulator.generate(prefix="hmm_")
+    resp = await client.post("/events", json=events)
+    assert resp.status_code == 201
+
+    resp = await client.put("/adjacency_matrix", json={})
+    assert resp.status_code == 200
+    assert len(resp.json()["edges"]) > 0
+
+    resp = await client.put("/classifier", json={})
+    assert resp.status_code == 200
+
+    # Train state detector
+    start_time = (datetime.now(timezone.utc) - timedelta(minutes=1)).isoformat()
+    resp = await client.put(
+        "/state_detectors/latencies",
+        json={"start": start_time},
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["method"] == "gaussian_hmm"
+    assert len(body["profiles"]) >= 1
+    for profile in body["profiles"]:
+        assert profile["chain_count"] > 0
+        assert len(profile["node_set"]) > 0
+        for edge in profile["edges"]:
+            assert len(edge["means"]) == 2
+            assert len(edge["variances"]) == 2
+            assert len(edge["transition_matrix"]) == 2
+            assert all(len(row) == 2 for row in edge["transition_matrix"])
+            assert edge["normal_state"] != edge["anomalous_state"]
+            assert edge["sample_count"] > 0
+
+    # GET returns persisted model
+    resp = await client.get("/state_detectors/latencies")
+    assert resp.status_code == 200
+    get_body = resp.json()
+    assert get_body["method"] == "gaussian_hmm"
+    assert len(get_body["profiles"]) == len(body["profiles"])
+
 
 async def test_simulator(client):
 

@@ -163,6 +163,20 @@ ORDER BY (run_id, source, target)
 """
 
 
+CREATE_STATE_DETECTOR_MODEL_TABLE_SQL = """
+CREATE TABLE IF NOT EXISTS {database}.state_detector_model (
+    computed_at    DateTime64(3) DEFAULT now64(3),
+    model_bytes    String,
+    model_name     LowCardinality(String) DEFAULT '',
+    model_params   String DEFAULT '{{}}',
+    method_name    LowCardinality(String) DEFAULT '',
+    start_time     String DEFAULT '',
+    end_time       String DEFAULT ''
+) ENGINE = MergeTree()
+ORDER BY (computed_at)
+"""
+
+
 class ClickHouseService:
     def __init__(self, client: Client, database: str = "arestor"):
         self.client = client
@@ -212,6 +226,10 @@ class ClickHouseService:
             f" ADD COLUMN IF NOT EXISTS accuracy Float64 DEFAULT 0",
         ):
             self.client.command(col_ddl)
+
+    def ensure_state_detector_model_table(self) -> None:
+        """Create the state_detector_model table if it doesn't exist."""
+        self.client.command(CREATE_STATE_DETECTOR_MODEL_TABLE_SQL.format(database=self.database))
 
     def truncate_events(self) -> int:
         """Truncate the events table. Returns the row count before truncation."""
@@ -319,6 +337,150 @@ class ClickHouseService:
             "max_pval": meta["max_pval"],
             "edges": edges,
         }
+
+    def query_chain_latencies(self, chain_id: str) -> list[dict]:
+        """Return per-edge observed latencies for a single chain.
+
+        Joins the chain's events with adjacency_edges to compute
+        target_timestamp - source_timestamp for each inferred edge.
+        """
+        query = (
+            f"SELECT ae.source, ae.target, "
+            f"toFloat64(date_diff('millisecond', e1.timestamp, e2.timestamp)) AS delta_ms "
+            f"FROM {self.database}.events AS e1 "
+            f"INNER JOIN {self.database}.adjacency_edges AS ae "
+            f"  ON e1.event_name = ae.source "
+            f"INNER JOIN {self.database}.events AS e2 "
+            f"  ON e2.chain_id = e1.chain_id AND e2.event_name = ae.target "
+            f"WHERE e1.chain_id = {{chain_id:String}}"
+        )
+        arrow_table = self.client.query_arrow(
+            query, parameters={"chain_id": chain_id}, use_strings=True
+        )
+        return pl.from_arrow(arrow_table).to_dicts()
+
+    def query_chain_latencies_by_ref(self, ref: str) -> list[dict]:
+        """Return per-edge observed latencies for all chains containing a ref.
+
+        Uses a subquery to find matching chain_ids via arrayExists on the
+        refs tuple array, then computes latencies via the same self-join.
+        """
+        query = (
+            f"SELECT e1.chain_id, ae.source, ae.target, "
+            f"toFloat64(date_diff('millisecond', e1.timestamp, e2.timestamp)) AS delta_ms "
+            f"FROM {self.database}.events AS e1 "
+            f"INNER JOIN {self.database}.adjacency_edges AS ae "
+            f"  ON e1.event_name = ae.source "
+            f"INNER JOIN {self.database}.events AS e2 "
+            f"  ON e2.chain_id = e1.chain_id AND e2.event_name = ae.target "
+            f"WHERE e1.chain_id IN ("
+            f"  SELECT DISTINCT chain_id FROM {self.database}.events "
+            f"  WHERE arrayExists("
+            f"    x -> concat(x.1, '_', x.2, '_', toString(x.3)) = {{ref:String}}, refs"
+            f"  )"
+            f")"
+        )
+        arrow_table = self.client.query_arrow(
+            query, parameters={"ref": ref}, use_strings=True
+        )
+        return pl.from_arrow(arrow_table).to_dicts()
+
+    def query_chain_id_by_ref(self, ref: str) -> str | None:
+        """Resolve a concatenated ref string to the first matching chain_id."""
+        query = (
+            f"SELECT DISTINCT chain_id FROM {self.database}.events "
+            f"WHERE arrayExists("
+            f"  x -> concat(x.1, '_', x.2, '_', toString(x.3)) = {{ref:String}}, refs"
+            f") LIMIT 1"
+        )
+        result = self.client.query(query, parameters={"ref": ref})
+        if result.result_rows:
+            return result.result_rows[0][0]
+        return None
+
+    def query_chain_node_set(self, chain_id: str) -> list[str]:
+        """Return the sorted unique event names for a chain."""
+        query = (
+            f"SELECT arraySort(groupUniqArray(event_name)) AS node_set "
+            f"FROM {self.database}.events "
+            f"WHERE chain_id = {{chain_id:String}}"
+        )
+        result = self.client.query(query, parameters={"chain_id": chain_id})
+        if result.result_rows and result.result_rows[0][0]:
+            return result.result_rows[0][0]
+        return []
+
+    def query_average_latencies(
+        self,
+        chain_id: str,
+        start: datetime,
+        end: datetime | None = None,
+    ) -> tuple[list[dict], int]:
+        """Aggregate latency stats across chains sharing the same profile.
+
+        Returns (edge_stats_rows, matching_chain_count).
+        When *end* is None the time window is open-ended (no upper bound).
+        """
+        time_filter = f"WHERE timestamp >= {{start:DateTime64(3)}}"
+        if end is not None:
+            time_filter += f" AND timestamp <= {{end:DateTime64(3)}}"
+
+        cte = (
+            f"WITH target_node_set AS ("
+            f"  SELECT arraySort(groupUniqArray(event_name)) AS node_set"
+            f"  FROM {self.database}.events"
+            f"  WHERE chain_id = {{chain_id:String}}"
+            f"), "
+            f"matching_chains AS ("
+            f"  SELECT chain_id"
+            f"  FROM {self.database}.events"
+            f"  {time_filter}"
+            f"  GROUP BY chain_id"
+            f"  HAVING arraySort(groupUniqArray(event_name)) = "
+            f"    (SELECT node_set FROM target_node_set)"
+            f") "
+        )
+
+        stats_query = (
+            f"{cte}"
+            f"SELECT source, target, "
+            f"  avg(delta_ms) AS avg_ms, "
+            f"  stddevPop(delta_ms) AS stddev_ms, "
+            f"  min(delta_ms) AS min_ms, "
+            f"  max(delta_ms) AS max_ms, "
+            f"  quantile(0.05)(delta_ms) AS p5_ms, "
+            f"  quantile(0.50)(delta_ms) AS p50_ms, "
+            f"  quantile(0.95)(delta_ms) AS p95_ms, "
+            f"  count() AS sample_count, "
+            f"  (SELECT count() FROM matching_chains) AS matching_chains "
+            f"FROM ("
+            f"  SELECT ae.source, ae.target, "
+            f"    toFloat64(date_diff('millisecond', e1.timestamp, e2.timestamp)) AS delta_ms "
+            f"  FROM {self.database}.events AS e1 "
+            f"  INNER JOIN {self.database}.adjacency_edges AS ae "
+            f"    ON e1.event_name = ae.source "
+            f"  INNER JOIN {self.database}.events AS e2 "
+            f"    ON e2.chain_id = e1.chain_id AND e2.event_name = ae.target "
+            f"  WHERE e1.chain_id IN (SELECT chain_id FROM matching_chains)"
+            f") "
+            f"GROUP BY source, target "
+            f"ORDER BY source, target"
+        )
+
+        params: dict = {"chain_id": chain_id, "start": start}
+        if end is not None:
+            params["end"] = end
+
+        arrow_table = self.client.query_arrow(
+            stats_query, parameters=params, use_strings=True
+        )
+        df = pl.from_arrow(arrow_table)
+        if df.is_empty():
+            return [], 0
+
+        matching_count = int(df["matching_chains"][0])
+        rows = df.drop("matching_chains").to_dicts()
+        return rows, matching_count
 
     def truncate_adjacency(self) -> int:
         """Truncate the adjacency_edges table. Returns the row count before truncation."""
@@ -535,3 +697,121 @@ class ClickHouseService:
             accuracy=accuracy,
             feature_importances=feature_importances,
         )
+
+    # ------------------------------------------------------------------
+    # State detector model persistence
+    # ------------------------------------------------------------------
+
+    def query_per_chain_edge_latencies(
+        self,
+        start: datetime,
+        end: datetime | None = None,
+    ) -> pl.DataFrame:
+        """Return per-chain per-edge raw latencies for all chains in the time window.
+
+        Columns: [chain_id, source, target, delta_ms].
+        """
+        time_filter = "WHERE e1.timestamp >= {start:DateTime64(3)}"
+        if end is not None:
+            time_filter += " AND e1.timestamp <= {end:DateTime64(3)}"
+
+        query = (
+            f"SELECT e1.chain_id AS chain_id, ae.source, ae.target, "
+            f"  toFloat64(date_diff('millisecond', e1.timestamp, e2.timestamp)) AS delta_ms "
+            f"FROM {self.database}.events AS e1 "
+            f"INNER JOIN {self.database}.adjacency_edges AS ae "
+            f"  ON e1.event_name = ae.source "
+            f"INNER JOIN {self.database}.events AS e2 "
+            f"  ON e2.chain_id = e1.chain_id AND e2.event_name = ae.target "
+            f"{time_filter}"
+        )
+        params: dict = {"start": start}
+        if end is not None:
+            params["end"] = end
+
+        arrow_table = self.client.query_arrow(query, parameters=params, use_strings=True)
+        return pl.from_arrow(arrow_table)
+
+    def query_chain_node_sets(
+        self,
+        start: datetime,
+        end: datetime | None = None,
+    ) -> pl.DataFrame:
+        """Return [chain_id, node_set] for all chains in the time window."""
+        time_filter = "WHERE timestamp >= {start:DateTime64(3)}"
+        if end is not None:
+            time_filter += " AND timestamp <= {end:DateTime64(3)}"
+
+        query = (
+            f"SELECT chain_id, arraySort(groupUniqArray(event_name)) AS node_set "
+            f"FROM {self.database}.events "
+            f"{time_filter} "
+            f"GROUP BY chain_id"
+        )
+        params: dict = {"start": start}
+        if end is not None:
+            params["end"] = end
+
+        arrow_table = self.client.query_arrow(query, parameters=params, use_strings=True)
+        return pl.from_arrow(arrow_table)
+
+    def insert_state_detector_model(
+        self,
+        model_bytes: bytes,
+        model_name: str = "",
+        model_params: str = "{}",
+        method_name: str = "",
+        start_time: str = "",
+        end_time: str = "",
+    ) -> None:
+        """Truncate and insert the serialized state detector model."""
+        import base64
+
+        self.client.command(
+            f"TRUNCATE TABLE IF EXISTS {self.database}.state_detector_model"
+        )
+        encoded = base64.b64encode(model_bytes).decode("ascii")
+        self.client.insert(
+            f"{self.database}.state_detector_model",
+            [[encoded, model_name, model_params, method_name, start_time, end_time]],
+            column_names=["model_bytes", "model_name", "model_params", "method_name", "start_time", "end_time"],
+            settings={"async_insert": 0, "wait_for_async_insert": 1},
+        )
+
+    def query_state_detector_model(self) -> bytes | None:
+        """Load the most recent serialized state detector model."""
+        import base64
+
+        query = (
+            f"SELECT model_bytes FROM {self.database}.state_detector_model "
+            f"ORDER BY computed_at DESC LIMIT 1"
+        )
+        try:
+            arrow_table = self.client.query_arrow(query, use_strings=True)
+        except Exception:
+            return None
+        df = pl.from_arrow(arrow_table)
+        if df.is_empty():
+            return None
+        encoded = df.row(0)[0]
+        return base64.b64decode(encoded)
+
+    def query_state_detector_model_metadata(self) -> dict | None:
+        """Load the most recent state detector model metadata (no binary blob)."""
+        query = (
+            f"SELECT method_name, start_time, end_time "
+            f"FROM {self.database}.state_detector_model "
+            f"ORDER BY computed_at DESC LIMIT 1"
+        )
+        try:
+            result = self.client.query(query)
+        except Exception:
+            return None
+        if not result.result_rows:
+            return None
+        method_name, start_time, end_time = result.result_rows[0]
+        return {
+            "method_name": method_name,
+            "start_time": start_time,
+            "end_time": end_time,
+        }

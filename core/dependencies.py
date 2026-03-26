@@ -9,7 +9,9 @@ from services.adjacency_service import AdjacencyService
 from services.cache_service import CacheService
 from services.chain_classifier_service import ChainClassifier
 from services.clickhouse_service import ClickHouseBatchWriter, ClickHouseService
+from services.latency_service import LatencyService
 from services.redis_service import RedisService
+from services.state_detector_service import StateDetectorService
 
 logger = logging.getLogger(__name__)
 
@@ -29,6 +31,8 @@ settings = Settings()
 _redis_service: RedisService | None = None
 _clickhouse_service: ClickHouseService | None = None
 _adjacency_service: AdjacencyService | None = None
+_latency_service: LatencyService | None = None
+_state_detector_service: StateDetectorService | None = None
 _cache_service: CacheService | None = None
 _batch_writer: ClickHouseBatchWriter | None = None
 _redis_pool: aioredis.ConnectionPool | None = None
@@ -38,7 +42,7 @@ _clickhouse_client = None
 @asynccontextmanager
 async def lifespan(app):
     """FastAPI lifespan: create connections on startup, close on shutdown."""
-    global _redis_service, _clickhouse_service, _adjacency_service, _cache_service, _batch_writer, _redis_pool, _clickhouse_client
+    global _redis_service, _clickhouse_service, _adjacency_service, _latency_service, _state_detector_service, _cache_service, _batch_writer, _redis_pool, _clickhouse_client
 
     # Redis
     _redis_pool = aioredis.BlockingConnectionPool(
@@ -70,6 +74,7 @@ async def lifespan(app):
     _clickhouse_service.ensure_adjacency_table()
     _clickhouse_service.ensure_profiles_table()
     _clickhouse_service.ensure_classifier_model_table()
+    _clickhouse_service.ensure_state_detector_model_table()
     logger.info("ClickHouse connected and tables ensured")
 
     # Batch writer for event inserts
@@ -97,6 +102,12 @@ async def lifespan(app):
 
     # Adjacency
     _adjacency_service = AdjacencyService(_clickhouse_service)
+
+    # Latency
+    _latency_service = LatencyService(_clickhouse_service)
+
+    # State detector
+    _state_detector_service = StateDetectorService(_clickhouse_service)
 
     yield
 
@@ -127,6 +138,16 @@ def get_batch_writer() -> ClickHouseBatchWriter:
 def get_adjacency_service() -> AdjacencyService:
     assert _adjacency_service is not None, "Adjacency service not initialized"
     return _adjacency_service
+
+
+def get_latency_service() -> LatencyService:
+    assert _latency_service is not None, "Latency service not initialized"
+    return _latency_service
+
+
+def get_state_detector_service() -> StateDetectorService:
+    assert _state_detector_service is not None, "State detector service not initialized"
+    return _state_detector_service
 
 
 def get_cache_service() -> CacheService:

@@ -1,3 +1,5 @@
+from datetime import datetime
+
 from pydantic import BaseModel
 
 # Events
@@ -72,3 +74,77 @@ class ClassifierRequest(BaseModel):
 class ClassifierResponse(BaseModel):
     profiles: list[PathProfile]
     method_results: dict[str, MethodResult]
+
+
+# ---------------------------------------------------------------------------
+# Latency models
+# ---------------------------------------------------------------------------
+
+class ChainLatency(BaseModel):
+    source: str
+    target: str
+    delta_ms: float
+
+
+class ChainLatencyResponse(BaseModel):
+    chain_id: str
+    latencies: list[ChainLatency]
+
+
+class EdgeLatencyStats(BaseModel):
+    source: str
+    target: str
+    avg_ms: float
+    stddev_ms: float
+    min_ms: float
+    max_ms: float
+    p5_ms: float
+    p50_ms: float
+    p95_ms: float
+    sample_count: int
+
+
+class AverageLatencyResponse(BaseModel):
+    chain_id: str
+    profile_id: int
+    node_set: list[str]
+    matching_chains: int
+    start: str
+    end: str
+    edges: list[EdgeLatencyStats]
+
+
+# ---------------------------------------------------------------------------
+# State detector models
+# ---------------------------------------------------------------------------
+
+class EdgeStateResult(BaseModel):
+    source: str
+    target: str
+    means: list[float]
+    variances: list[float]
+    transition_matrix: list[list[float]]
+    start_probabilities: list[float]
+    normal_state: int
+    anomalous_state: int
+    sample_count: int
+
+
+class ProfileStateResult(BaseModel):
+    profile_id: int
+    node_set: list[str]
+    chain_count: int
+    edges: list[EdgeStateResult]
+
+
+class StateDetectorRequest(BaseModel):
+    start: datetime
+    end: datetime | None = None
+    method: str = "gaussian_hmm"
+
+
+class StateDetectorResponse(BaseModel):
+    method: str
+    start: str
+    end: str
+    profiles: list[ProfileStateResult]

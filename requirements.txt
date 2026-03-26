@@ -17,6 +17,7 @@ polars
 polars-ds
 scipy
 scikit-learn
+hmmlearn
 joblib
 
 # Visualisation dependencies (Jupyter Notebook Only)

@@ -20,12 +20,16 @@ from main import app
 from services.adjacency_service import AdjacencyService
 from services.cache_service import CacheService
 from services.clickhouse_service import ClickHouseBatchWriter, ClickHouseService
+from services.latency_service import LatencyService
+from services.state_detector_service import StateDetectorService
 from core.dependencies import (
     get_adjacency_service,
     get_batch_writer,
     get_cache_service,
     get_clickhouse_service,
+    get_latency_service,
     get_redis_service,
+    get_state_detector_service,
 )
 from services.redis_service import RedisService
 
@@ -132,6 +136,7 @@ def clickhouse_service(clickhouse_container):
     svc.ensure_adjacency_table()
     svc.ensure_profiles_table()
     svc.ensure_classifier_model_table()
+    svc.ensure_state_detector_model_table()
     yield svc
     ch_client.close()
 
@@ -172,6 +177,8 @@ def _flush_redis_between_tests(request):
 def client(redis_service, clickhouse_service, batch_writer):
     """Async httpx client with real Redis Stack + real ClickHouse."""
     adjacency_service = AdjacencyService(clickhouse_service)
+    latency_service = LatencyService(clickhouse_service)
+    state_detector_service = StateDetectorService(clickhouse_service)
     cache_service = CacheService(redis_service)
     app.dependency_overrides[get_redis_service] = (
         lambda: redis_service
@@ -187,6 +194,12 @@ def client(redis_service, clickhouse_service, batch_writer):
     )
     app.dependency_overrides[get_cache_service] = (
         lambda: cache_service
+    )
+    app.dependency_overrides[get_latency_service] = (
+        lambda: latency_service
+    )
+    app.dependency_overrides[get_state_detector_service] = (
+        lambda: state_detector_service
     )
     transport = httpx.ASGITransport(app=app)
     c = httpx.AsyncClient(
