@@ -1,0 +1,86 @@
+<div class="counts-layout">
+  <!-- Left control panel -->
+  <aside class="control-panel">
+
+    <div class="control-group">
+      <label class="control-label">Event Name</label>
+      <select class="control-select" [(ngModel)]="selectedEvent">
+        @for (name of eventNames; track name) {
+          <option [value]="name">{{ name }}</option>
+        }
+      </select>
+    </div>
+
+    <div class="control-group">
+      <label class="control-label">Dates</label>
+      <div class="date-chips">
+        @for (date of selectedDates; track date; let i = $index) {
+          <div class="date-chip" [style.border-color]="dateColor(i)">
+            <span [style.color]="dateColor(i)">{{ date }}</span>
+            <button class="remove-btn" (click)="removeDate(date)">&#x2715;</button>
+          </div>
+        }
+      </div>
+      <div class="add-date-row">
+        <input type="date" class="control-input" [(ngModel)]="newDate" />
+        <button class="btn-secondary" (click)="addDate()">Add</button>
+      </div>
+    </div>
+
+    <div class="control-group">
+      <label class="control-label">Bucket Size</label>
+      <select class="control-select" [(ngModel)]="bucketSeconds">
+        @for (opt of bucketOptions; track opt.value) {
+          <option [value]="opt.value">{{ opt.label }}</option>
+        }
+      </select>
+    </div>
+
+    <div class="control-group">
+      <label class="control-label">Metric</label>
+      @for (opt of metricOptions; track opt.value) {
+        <label class="radio-label">
+          <input type="radio" name="metric" [value]="opt.value" [(ngModel)]="metric" />
+          {{ opt.label }}
+        </label>
+      }
+    </div>
+
+    <button class="btn-primary" (click)="refresh()" [disabled]="loading">
+      {{ loading ? 'Loading\u2026' : 'Refresh' }}
+    </button>
+
+    @if (error) {
+      <p class="error-msg">{{ error }}</p>
+    }
+  </aside>
+
+  <!-- Chart area -->
+  <main class="chart-area">
+    <div #chartEl class="plotly-chart"></div>
+
+    @if (ttestResult && ttestDates.length === 2) {
+      <div class="ttest-panel">
+        <div class="ttest-title">Two-Sample Student's T-Test</div>
+        <div class="ttest-stats">
+          <span><span class="stat-label">p-value:</span>
+            <strong [class.significant]="ttestResult.significant"
+                    [class.not-significant]="!ttestResult.significant">
+              {{ ttestResult.p_value | number:'1.4-4' }}
+            </strong>
+          </span>
+          <span><span class="stat-label">t-statistic:</span> {{ ttestResult.t_statistic | number:'1.2-2' }}</span>
+          <span><span class="stat-label">df:</span> {{ ttestResult.degrees_of_freedom }}</span>
+          <span class="badge" [class.badge-significant]="ttestResult.significant"
+                              [class.badge-not-significant]="!ttestResult.significant">
+            {{ ttestResult.significant ? 'SIGNIFICANT (\u03b1 = 0.05)' : 'NOT SIGNIFICANT' }}
+          </span>
+        </div>
+        <p class="ttest-summary">
+          The distributions on {{ ttestDates[0] }} and {{ ttestDates[1] }} are
+          <strong>{{ ttestResult.significant ? 'statistically different' : 'not statistically different' }}</strong>.
+        </p>
+      </div>
+    }
+  </main>
+</div>
