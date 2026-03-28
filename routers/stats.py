@@ -8,6 +8,7 @@ router = APIRouter()
 
 
 @router.post("/stats/ttest",
+             response_model=TTestResult,
              summary="Run a two-sample Welch's T-test on two series of observations")
 async def run_ttest(
     request: TTestRequest,
