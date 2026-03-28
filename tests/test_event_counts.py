@@ -1,3 +1,4 @@
+import asyncio
 from datetime import datetime, timedelta, timezone
 
 import polars as pl
@@ -92,7 +93,7 @@ async def test_get_event_names_returns_distinct(client, batch_writer):
     ]
     for e in events:
         await batch_writer.append(["", e["EventName"], datetime.fromisoformat(e["Timestamp"]), [], [], []])
-    import asyncio; await asyncio.sleep(0.2)
+    await asyncio.sleep(0.2)
 
     response = await client.get("/events/names")
     assert response.status_code == 200
@@ -106,7 +107,7 @@ async def test_post_event_counts(client, batch_writer):
     for i in range(5):
         ts = now + timedelta(seconds=i * 30)
         await batch_writer.append(["", "myevent", ts, [], [], []])
-    import asyncio; await asyncio.sleep(0.2)
+    await asyncio.sleep(0.2)
 
     response = await client.post("/events/counts", json={
         "event_name": "myevent",
@@ -127,7 +128,7 @@ async def test_post_event_counts_cumulative_sum(client, batch_writer):
     for i in range(3):
         ts = now + timedelta(seconds=i * 30)
         await batch_writer.append(["", "csevent", ts, [], [], []])
-    import asyncio; await asyncio.sleep(0.2)
+    await asyncio.sleep(0.2)
 
     response = await client.post("/events/counts", json={
         "event_name": "csevent",
