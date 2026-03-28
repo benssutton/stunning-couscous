@@ -163,6 +163,35 @@ ORDER BY (run_id, source, target)
 """
 
 
+CREATE_EVENT_REFS_TABLE_SQL = """
+CREATE TABLE IF NOT EXISTS {database}.event_refs (
+    ref_type      LowCardinality(String),
+    ref_id        String,
+    ref_ver       UInt16,
+    chain_id      String,
+    event_name    LowCardinality(String),
+    timestamp     DateTime64(3)
+) ENGINE = MergeTree()
+PARTITION BY toYYYYMMDD(timestamp)
+ORDER BY (ref_id, timestamp, chain_id)
+TTL toDateTime(timestamp) + INTERVAL 90 DAY
+SETTINGS index_granularity = 8192
+"""
+
+CREATE_EVENT_REFS_MV_SQL = """
+CREATE MATERIALIZED VIEW IF NOT EXISTS {database}.event_refs_mv
+TO {database}.event_refs AS
+SELECT
+    ref.1 AS ref_type,
+    ref.2 AS ref_id,
+    ref.3 AS ref_ver,
+    chain_id,
+    event_name,
+    timestamp
+FROM {database}.events
+ARRAY JOIN refs AS ref
+"""
+
 CREATE_STATE_DETECTOR_MODEL_TABLE_SQL = """
 CREATE TABLE IF NOT EXISTS {database}.state_detector_model (
     computed_at    DateTime64(3) DEFAULT now64(3),
@@ -230,6 +259,72 @@ class ClickHouseService:
     def ensure_state_detector_model_table(self) -> None:
         """Create the state_detector_model table if it doesn't exist."""
         self.client.command(CREATE_STATE_DETECTOR_MODEL_TABLE_SQL.format(database=self.database))
+
+    def ensure_event_refs_table(self) -> None:
+        """Create the event_refs table and materialized view if they don't exist."""
+        self.client.command(CREATE_EVENT_REFS_TABLE_SQL.format(database=self.database))
+        self.client.command(CREATE_EVENT_REFS_MV_SQL.format(database=self.database))
+
+    def backfill_event_refs(self) -> int:
+        """One-time backfill of event_refs from existing events. Returns rows inserted."""
+        query = (
+            f"INSERT INTO {self.database}.event_refs "
+            f"SELECT ref.1, ref.2, ref.3, chain_id, event_name, timestamp "
+            f"FROM {self.database}.events ARRAY JOIN refs AS ref"
+        )
+        self.client.command(query)
+        count = self.client.query(
+            f"SELECT count() FROM {self.database}.event_refs"
+        ).result_rows[0][0]
+        return count
+
+    @staticmethod
+    def parse_concat_ref(ref: str) -> tuple[str, str, int]:
+        """Parse a concatenated ref 'type_id_ver' into (type, id, ver).
+
+        The ref type is always a single segment before the first underscore,
+        and the version is the last segment after the final underscore.
+        Everything in between is the id (which may contain underscores).
+        """
+        first_sep = ref.index("_")
+        last_sep = ref.rindex("_")
+        return ref[:first_sep], ref[first_sep + 1:last_sep], int(ref[last_sep + 1:])
+
+    def search_ref_ids(self, prefix: str, limit: int = 20) -> list[str]:
+        """Return distinct ref IDs matching a prefix (autocomplete)."""
+        query = (
+            f"SELECT DISTINCT ref_id FROM {self.database}.event_refs "
+            f"WHERE startsWith(ref_id, {{prefix:String}}) "
+            f"ORDER BY ref_id LIMIT {{limit:UInt32}}"
+        )
+        result = self.client.query(
+            query, parameters={"prefix": prefix, "limit": limit}
+        )
+        return [row[0] for row in result.result_rows]
+
+    def search_chains_by_ref_id(self, ref_id: str, limit: int = 100) -> list[str]:
+        """Return chain IDs containing an exact ref ID."""
+        query = (
+            f"SELECT DISTINCT chain_id FROM {self.database}.event_refs "
+            f"WHERE ref_id = {{ref_id:String}} "
+            f"ORDER BY chain_id LIMIT {{limit:UInt32}}"
+        )
+        result = self.client.query(
+            query, parameters={"ref_id": ref_id, "limit": limit}
+        )
+        return [row[0] for row in result.result_rows]
+
+    def search_chains_by_ref_prefix(self, prefix: str, limit: int = 100) -> list[str]:
+        """Return chain IDs containing refs whose ID matches a prefix."""
+        query = (
+            f"SELECT DISTINCT chain_id FROM {self.database}.event_refs "
+            f"WHERE startsWith(ref_id, {{prefix:String}}) "
+            f"ORDER BY chain_id LIMIT {{limit:UInt32}}"
+        )
+        result = self.client.query(
+            query, parameters={"prefix": prefix, "limit": limit}
+        )
+        return [row[0] for row in result.result_rows]
 
     def truncate_events(self) -> int:
         """Truncate the events table. Returns the row count before truncation."""
@@ -362,9 +457,10 @@ class ClickHouseService:
     def query_chain_latencies_by_ref(self, ref: str) -> list[dict]:
         """Return per-edge observed latencies for all chains containing a ref.
 
-        Uses a subquery to find matching chain_ids via arrayExists on the
-        refs tuple array, then computes latencies via the same self-join.
+        Uses event_refs for fast chain_id lookup via primary key, then
+        computes latencies via the same self-join on events.
         """
+        ref_type, ref_id, ref_ver = self.parse_concat_ref(ref)
         query = (
             f"SELECT e1.chain_id, ae.source, ae.target, "
             f"toFloat64(date_diff('millisecond', e1.timestamp, e2.timestamp)) AS delta_ms "
@@ -374,26 +470,33 @@ class ClickHouseService:
             f"INNER JOIN {self.database}.events AS e2 "
             f"  ON e2.chain_id = e1.chain_id AND e2.event_name = ae.target "
             f"WHERE e1.chain_id IN ("
-            f"  SELECT DISTINCT chain_id FROM {self.database}.events "
-            f"  WHERE arrayExists("
-            f"    x -> concat(x.1, '_', x.2, '_', toString(x.3)) = {{ref:String}}, refs"
-            f"  )"
+            f"  SELECT DISTINCT chain_id FROM {self.database}.event_refs "
+            f"  WHERE ref_id = {{ref_id:String}}"
+            f"    AND ref_type = {{ref_type:String}}"
+            f"    AND ref_ver = {{ref_ver:UInt16}}"
             f")"
         )
         arrow_table = self.client.query_arrow(
-            query, parameters={"ref": ref}, use_strings=True
+            query,
+            parameters={"ref_id": ref_id, "ref_type": ref_type, "ref_ver": ref_ver},
+            use_strings=True,
         )
         return pl.from_arrow(arrow_table).to_dicts()
 
     def query_chain_id_by_ref(self, ref: str) -> str | None:
         """Resolve a concatenated ref string to the first matching chain_id."""
+        ref_type, ref_id, ref_ver = self.parse_concat_ref(ref)
         query = (
-            f"SELECT DISTINCT chain_id FROM {self.database}.events "
-            f"WHERE arrayExists("
-            f"  x -> concat(x.1, '_', x.2, '_', toString(x.3)) = {{ref:String}}, refs"
-            f") LIMIT 1"
+            f"SELECT DISTINCT chain_id FROM {self.database}.event_refs "
+            f"WHERE ref_id = {{ref_id:String}}"
+            f"  AND ref_type = {{ref_type:String}}"
+            f"  AND ref_ver = {{ref_ver:UInt16}}"
+            f" LIMIT 1"
         )
-        result = self.client.query(query, parameters={"ref": ref})
+        result = self.client.query(
+            query,
+            parameters={"ref_id": ref_id, "ref_type": ref_type, "ref_ver": ref_ver},
+        )
         if result.result_rows:
             return result.result_rows[0][0]
         return None
@@ -656,6 +759,38 @@ class ClickHouseService:
             })
         return chains
 
+    def query_chain_by_id(self, chain_id: str) -> dict | None:
+        """Fetch a single event chain by chain_id from ClickHouse."""
+        query = (
+            f"SELECT chain_id, "
+            f"groupArray(event_name) AS event_names, "
+            f"groupArray(toString(timestamp)) AS timestamps, "
+            f"arrayMap(x -> concat(x.1, '_', x.2, '_', toString(x.3)), "
+            f"  arrayDistinct(groupArrayArray(refs))) AS concat_refs, "
+            f"arrayDistinct(groupArrayArray(context_keys)) AS ctx_keys, "
+            f"arrayDistinct(groupArrayArray(context_values)) AS ctx_values "
+            f"FROM {self.database}.events "
+            f"WHERE chain_id = {{chain_id:String}} "
+            f"GROUP BY chain_id"
+        )
+        arrow_table = self.client.query_arrow(
+            query, parameters={"chain_id": chain_id}, use_strings=True,
+        )
+        df = pl.from_arrow(arrow_table)
+        if df.is_empty():
+            return None
+        row = df.row(0, named=True)
+        ctx_keys = row["ctx_keys"] or []
+        ctx_values = row["ctx_values"] or []
+        return {
+            "chain_id": row["chain_id"],
+            "concatenatedrefs": list(row["concat_refs"]),
+            "timestamps": dict(zip(row["event_names"], row["timestamps"])),
+            "context": dict(zip(ctx_keys, ctx_values)) if ctx_keys else {},
+            "complete": False,
+            "terminated": False,
+        }
+
     def query_classifier_model(self) -> bytes | None:
         """Load the most recent serialized classifier model."""
         import base64
@@ -815,3 +950,45 @@ class ClickHouseService:
             "start_time": start_time,
             "end_time": end_time,
         }
+
+    def get_distinct_event_names(self) -> list[str]:
+        result = self.client.query(
+            f"SELECT DISTINCT event_name FROM {self.database}.events ORDER BY event_name"
+        )
+        return [row[0] for row in result.result_rows]
+
+    def get_event_counts(
+        self,
+        event_name: str,
+        dates: list[str],
+        bucket_seconds: int,
+    ) -> pl.DataFrame:
+        """Return per-bucket event counts for the given dates.
+
+        Returns a Polars DataFrame with columns:
+            date (str, YYYY-MM-DD), bucket_time (datetime), count (int)
+        """
+        result = self.client.query(
+            f"""
+            SELECT
+                toString(toDate(timestamp))           AS date,
+                toStartOfInterval(timestamp, INTERVAL {{bucket_seconds:UInt32}} SECOND) AS bucket_time,
+                COUNT(*)                              AS count
+            FROM {self.database}.events
+            WHERE event_name = {{event_name:String}}
+              AND toDate(timestamp) IN {{dates:Array(String)}}
+            GROUP BY date, bucket_time
+            ORDER BY date, bucket_time
+            """,
+            parameters={"event_name": event_name, "dates": dates, "bucket_seconds": bucket_seconds},
+        )
+        rows = result.result_rows
+        if not rows:
+            return pl.DataFrame(schema={"date": pl.Utf8, "bucket_time": pl.Datetime, "count": pl.Int64})
+        return pl.DataFrame(
+            {
+                "date": [r[0] for r in rows],
+                "bucket_time": [r[1] for r in rows],
+                "count": [r[2] for r in rows],
+            }
+        )
