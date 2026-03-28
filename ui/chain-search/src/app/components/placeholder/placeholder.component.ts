@@ -1,11 +1,13 @@
-import { Component, input } from '@angular/core';
+import { Component, OnInit } from '@angular/core';
+import { ActivatedRoute } from '@angular/router';
 
 @Component({
   selector: 'app-placeholder',
   standalone: true,
+  imports: [],
   template: `
     <div class="placeholder-page">
-      <h2>{{ title() }}</h2>
+      <h2>{{ title }}</h2>
       <p>Coming soon.</p>
     </div>
   `,
@@ -17,6 +19,12 @@ import { Component, input } from '@angular/core';
     }
   `],
 })
-export class PlaceholderComponent {
-  title = input<string>('This screen');
+export class PlaceholderComponent implements OnInit {
+  title = 'This screen';
+
+  constructor(private route: ActivatedRoute) {}
+
+  ngOnInit(): void {
+    this.title = this.route.snapshot.data['title'] ?? 'This screen';
+  }
 }
