@@ -33,3 +33,28 @@ def test_ttest_custom_alpha():
     result = svc.run_ttest(a, b, alpha=0.5)
     assert result.alpha == 0.5
     assert result.significant == (result.p_value < 0.5)
+
+
+async def test_ttest_endpoint_significant(client):
+    response = await client.post("/stats/ttest", json={
+        "series_a": [10.0, 11.0, 10.5, 10.2, 11.1, 10.8, 10.3, 11.2, 10.6, 10.9],
+        "series_b": [20.0, 21.0, 19.5, 20.8, 21.3, 19.9, 20.5, 21.1, 20.2, 19.7],
+        "alpha": 0.05,
+    })
+    assert response.status_code == 200
+    body = response.json()
+    assert body["significant"] is True
+    assert body["p_value"] < 0.05
+    assert "t_statistic" in body
+    assert "degrees_of_freedom" in body
+
+
+async def test_ttest_endpoint_default_alpha(client):
+    response = await client.post("/stats/ttest", json={
+        "series_a": [1.0, 2.0, 1.5],
+        "series_b": [100.0, 200.0, 150.0],
+    })
+    assert response.status_code == 200
+    body = response.json()
+    assert body["alpha"] == 0.05
+    assert body["significant"] is True
