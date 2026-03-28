@@ -1,4 +1,4 @@
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 import polars as pl
 import pytest
@@ -6,6 +6,10 @@ import pytest
 from services.event_counts_service import EventCountsService
 
 pytestmark = pytest.mark.asyncio(loop_scope="session")
+
+
+def _iso(dt: datetime) -> str:
+    return dt.isoformat(timespec="milliseconds")
 
 
 def _make_df(rows: list[tuple]) -> pl.DataFrame:
@@ -71,3 +75,68 @@ def test_multiple_dates():
     response = svc.build_response(df, "count")
     dates = {s.date for s in response.series}
     assert dates == {"2026-03-27", "2026-03-26"}
+
+
+async def test_get_event_names_empty(client):
+    response = await client.get("/events/names")
+    assert response.status_code == 200
+    assert response.json() == {"names": []}
+
+
+async def test_get_event_names_returns_distinct(client, batch_writer):
+    now = datetime.now(timezone.utc)
+    events = [
+        {"EventName": "A", "Timestamp": _iso(now), "Refs": [{"type": "A", "id": "1", "ver": 1}], "Context": {}},
+        {"EventName": "A", "Timestamp": _iso(now + timedelta(seconds=1)), "Refs": [{"type": "A", "id": "2", "ver": 1}], "Context": {}},
+        {"EventName": "B", "Timestamp": _iso(now + timedelta(seconds=2)), "Refs": [{"type": "B", "id": "1", "ver": 1}], "Context": {}},
+    ]
+    for e in events:
+        await batch_writer.append(["", e["EventName"], datetime.fromisoformat(e["Timestamp"]), [], [], []])
+    import asyncio; await asyncio.sleep(0.2)
+
+    response = await client.get("/events/names")
+    assert response.status_code == 200
+    names = response.json()["names"]
+    assert set(names) == {"A", "B"}
+
+
+async def test_post_event_counts(client, batch_writer):
+    today = datetime.now(timezone.utc).date().isoformat()
+    now = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
+    for i in range(5):
+        ts = now + timedelta(seconds=i * 30)
+        await batch_writer.append(["", "myevent", ts, [], [], []])
+    import asyncio; await asyncio.sleep(0.2)
+
+    response = await client.post("/events/counts", json={
+        "event_name": "myevent",
+        "dates": [today],
+        "bucket_seconds": 30,
+        "metric": "count",
+    })
+    assert response.status_code == 200
+    body = response.json()
+    assert len(body["series"]) == 1
+    assert body["series"][0]["date"] == today
+    assert len(body["series"][0]["buckets"]) > 0
+
+
+async def test_post_event_counts_cumulative_sum(client, batch_writer):
+    today = datetime.now(timezone.utc).date().isoformat()
+    now = datetime.now(timezone.utc).replace(hour=1, minute=0, second=0, microsecond=0)
+    for i in range(3):
+        ts = now + timedelta(seconds=i * 30)
+        await batch_writer.append(["", "csevent", ts, [], [], []])
+    import asyncio; await asyncio.sleep(0.2)
+
+    response = await client.post("/events/counts", json={
+        "event_name": "csevent",
+        "dates": [today],
+        "bucket_seconds": 30,
+        "metric": "cumulative_sum",
+    })
+    assert response.status_code == 200
+    buckets = response.json()["series"][0]["buckets"]
+    values = [b["value"] for b in buckets]
+    # Each bucket has 1 event; cumsum should be [1, 2, 3]
+    assert values == [1.0, 2.0, 3.0]

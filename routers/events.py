@@ -3,10 +3,11 @@ import time
 
 from fastapi import APIRouter, Depends, Query
 
-from schemas.models import Event
+from schemas.models import Event, EventCountsRequest, EventCountsResponse, EventNamesResponse
 from services.clickhouse_service import ClickHouseBatchWriter, ClickHouseService
 from services.data_simulator import DataSimulator
-from core.dependencies import get_batch_writer, get_clickhouse_service, get_redis_service
+from services.event_counts_service import EventCountsService
+from core.dependencies import get_batch_writer, get_clickhouse_service, get_redis_service, get_event_counts_service
 from services.redis_service import RedisService
 
 router = APIRouter()
@@ -71,3 +72,25 @@ async def receive_event(
         )
         results.append({"status": "received", "event_name": event.EventName, "chain_id": chain_id})
     return results
+
+
+@router.get("/events/names",
+            response_model=EventNamesResponse,
+            summary="List distinct event names")
+async def get_event_names(
+    ch_svc: ClickHouseService = Depends(get_clickhouse_service),
+) -> EventNamesResponse:
+    names = ch_svc.get_distinct_event_names()
+    return EventNamesResponse(names=names)
+
+
+@router.post("/events/counts",
+             response_model=EventCountsResponse,
+             summary="Create a time-series count of events")
+async def get_event_counts(
+    request: EventCountsRequest,
+    ch_svc: ClickHouseService = Depends(get_clickhouse_service),
+    counts_svc: EventCountsService = Depends(get_event_counts_service),
+) -> EventCountsResponse:
+    df = ch_svc.get_event_counts(request.event_name, request.dates, request.bucket_seconds)
+    return counts_svc.build_response(df, request.metric)

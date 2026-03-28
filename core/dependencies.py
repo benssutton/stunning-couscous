@@ -9,6 +9,7 @@ from services.adjacency_service import AdjacencyService
 from services.cache_service import CacheService
 from services.chain_classifier_service import ChainClassifier
 from services.clickhouse_service import ClickHouseBatchWriter, ClickHouseService
+from services.event_counts_service import EventCountsService
 from services.latency_service import LatencyService
 from services.redis_service import RedisService
 from services.search_service import SearchService
@@ -169,3 +170,7 @@ def get_search_service() -> SearchService:
 
 def get_stats_service() -> StatsService:
     return StatsService()
+
+
+def get_event_counts_service() -> EventCountsService:
+    return EventCountsService()
