@@ -1,8 +1,8 @@
 import { Component, OnInit, OnDestroy, ElementRef, ViewChild, AfterViewInit } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
-import { Subscription } from 'rxjs';
-import { catchError } from 'rxjs/operators';
+import { Subject } from 'rxjs';
+import { catchError, takeUntil } from 'rxjs/operators';
 import Plotly from 'plotly.js-dist-min';
 
 import { ApiService } from '../../services/api.service';
@@ -54,20 +54,18 @@ export class EventCountsComponent implements OnInit, OnDestroy, AfterViewInit {
   ttestDates: string[] = [];
 
   private chartInitialised = false;
-  private subs = new Subscription();
+  private destroy$ = new Subject<void>();
 
   constructor(private api: ApiService) {}
 
   ngOnInit(): void {
-    this.subs.add(
-      this.api.getEventNames().subscribe({
-        next: (res) => {
-          this.eventNames = res.names;
-          if (res.names.length) this.selectedEvent = res.names[0];
-        },
-        error: () => { this.error = 'Failed to load event names.'; },
-      })
-    );
+    this.api.getEventNames().pipe(takeUntil(this.destroy$)).subscribe({
+      next: (res) => {
+        this.eventNames = res.names;
+        if (res.names.length) this.selectedEvent = res.names[0];
+      },
+      error: () => { this.error = 'Failed to load event names.'; },
+    });
   }
 
   ngAfterViewInit(): void {
@@ -76,7 +74,8 @@ export class EventCountsComponent implements OnInit, OnDestroy, AfterViewInit {
   }
 
   ngOnDestroy(): void {
-    this.subs.unsubscribe();
+    this.destroy$.next();
+    this.destroy$.complete();
     if (this.chartInitialised) {
       Plotly.purge(this.chartEl.nativeElement);
     }
@@ -107,23 +106,21 @@ export class EventCountsComponent implements OnInit, OnDestroy, AfterViewInit {
     this.error = '';
     this.ttestResult = null;
 
-    this.subs.add(
-      this.api.getEventCounts({
-        event_name: this.selectedEvent,
-        dates: this.selectedDates,
-        bucket_seconds: this.bucketSeconds,
-        metric: this.metric,
-      }).pipe(catchError(err => { this.error = 'Failed to load event counts.'; this.loading = false; throw err; }))
-      .subscribe(response => {
-        this.renderChart(response);
+    this.api.getEventCounts({
+      event_name: this.selectedEvent,
+      dates: this.selectedDates,
+      bucket_seconds: this.bucketSeconds,
+      metric: this.metric,
+    }).pipe(catchError(err => { this.error = 'Failed to load event counts.'; this.loading = false; throw err; }), takeUntil(this.destroy$))
+    .subscribe(response => {
+      this.renderChart(response);
 
-        if (this.selectedDates.length >= 2) {
-          this.runTTest(response);
-        } else {
-          this.loading = false;
-        }
-      })
-    );
+      if (this.selectedDates.length >= 2) {
+        this.runTTest(response);
+      } else {
+        this.loading = false;
+      }
+    });
   }
 
   private renderChart(response: EventCountsResponse): void {
@@ -146,23 +143,21 @@ export class EventCountsComponent implements OnInit, OnDestroy, AfterViewInit {
 
     if (!seriesA || !seriesB) { this.loading = false; return; }
 
-    this.subs.add(
-      this.api.runTTest({
-        series_a: seriesA.buckets.map(p => p.value),
-        series_b: seriesB.buckets.map(p => p.value),
-        alpha: 0.05,
-      }).subscribe({
-        next: (result) => {
-          this.ttestResult = result;
-          this.ttestDates = [a, b];
-          this.loading = false;
-        },
-        error: () => {
-          this.error = 'Failed to run T-test.';
-          this.loading = false;
-        },
-      })
-    );
+    this.api.runTTest({
+      series_a: seriesA.buckets.map(p => p.value),
+      series_b: seriesB.buckets.map(p => p.value),
+      alpha: 0.05,
+    }).pipe(takeUntil(this.destroy$)).subscribe({
+      next: (result) => {
+        this.ttestResult = result;
+        this.ttestDates = [a, b];
+        this.loading = false;
+      },
+      error: () => {
+        this.error = 'Failed to run T-test.';
+        this.loading = false;
+      },
+    });
   }
 
   private plotlyLayout(): object {
