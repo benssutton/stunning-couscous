@@ -1,0 +1,7 @@
+{
+  "/search": { "target": "http://localhost:8000", "secure": false },
+  "/chains": { "target": "http://localhost:8000", "secure": false },
+  "/latencies": { "target": "http://localhost:8000", "secure": false },
+  "/adjacency_matrix": { "target": "http://localhost:8000", "secure": false },
+  "/events": { "target": "http://localhost:8000", "secure": false }
+}

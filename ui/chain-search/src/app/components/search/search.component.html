@@ -1,0 +1,70 @@
+<div class="search-page">
+  <header class="search-header">
+    <h1>Event Chain Search</h1>
+  </header>
+
+  <div class="search-controls">
+    <div class="autocomplete-wrapper">
+      <label for="ref-input">Reference ID</label>
+      <input
+        id="ref-input"
+        type="text"
+        [value]="query"
+        (input)="onInput($any($event.target).value)"
+        (keydown)="onKeydown($event)"
+        (blur)="showDropdown = false"
+        placeholder="Type at least 3 characters..."
+        autocomplete="off"
+        data-testid="ref-input"
+      />
+      @if (showDropdown) {
+        <ul class="suggestions" data-testid="suggestions-dropdown">
+          @for (ref of suggestions; track ref; let i = $index) {
+            <li
+              [class.highlighted]="i === highlightedIndex"
+              (mousedown)="selectRef(ref)"
+              data-testid="suggestion-item"
+            >
+              {{ ref }}
+            </li>
+          }
+        </ul>
+      }
+    </div>
+
+    <div class="hours-wrapper">
+      <label for="hours-input">Avg window (hours)</label>
+      <input
+        id="hours-input"
+        type="number"
+        [(ngModel)]="hoursBack"
+        min="1"
+        max="8760"
+        data-testid="hours-input"
+      />
+    </div>
+  </div>
+
+  @if (loading) {
+    <div class="loading" data-testid="loading">Loading chain details...</div>
+  }
+
+  @if (error) {
+    <div class="error" data-testid="error-message">{{ error }}</div>
+  }
+
+  @if (chainDetail && latencies) {
+    <div class="results" data-testid="results">
+      <app-chain-dag
+        [chainDetail]="chainDetail"
+        [latencies]="latencies"
+        [averageLatencies]="averageLatencies"
+      />
+      <app-chain-table
+        [chainDetail]="chainDetail"
+        [latencies]="latencies"
+        [averageLatencies]="averageLatencies"
+      />
+    </div>
+  }
+</div>

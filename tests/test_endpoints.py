@@ -318,6 +318,83 @@ async def test_state_detector_operations(client):
     assert len(get_body["profiles"]) == len(body["profiles"])
 
 
+async def test_search_operations(client):
+
+    # 422 when no params provided to chain search
+    resp = await client.get("/search/chains")
+    assert resp.status_code == 422
+
+    # Empty results for unknown prefix
+    resp = await client.get("/search/refs", params={"q": "nonexistent"})
+    assert resp.status_code == 200
+    assert resp.json()["results"] == []
+
+    # Ingest events
+    resp = await client.post("/events/simulation?num_intervals=1")
+    assert resp.status_code == 201
+    assert resp.json()["event_count"] != 0
+
+    # Autocomplete ref IDs by prefix — all generated refs start with "srch_"
+    resp = await client.get("/search/refs", params={"q": "srch_"})
+    assert resp.status_code == 200
+    body = resp.json()
+    assert len(body["results"]) > 0
+    for ref_id in body["results"]:
+        assert ref_id.startswith("srch_")
+
+    # Search chains by exact ref ID
+    ref_id = body["results"][0]
+    resp = await client.get("/search/chains", params={"ref": ref_id})
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["count"] > 0
+    assert len(body["chain_ids"]) == body["count"]
+
+    # Search chains by ref prefix
+    resp = await client.get("/search/chains", params={"ref_prefix": "srch_"})
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["count"] > 0
+
+    # Validate min_length=2 constraint on prefix
+    resp = await client.get("/search/refs", params={"q": "x"})
+    assert resp.status_code == 422
+
+    resp = await client.get("/search/chains", params={"ref_prefix": "x"})
+    assert resp.status_code == 422
+
+
+async def test_chain_detail(client):
+
+    # 404 for nonexistent chain
+    resp = await client.get("/chains/nonexistent")
+    assert resp.status_code == 404
+
+    # Ingest events
+    simulator = DataSimulator(num_intervals=1, seed=42)
+    _, events = simulator.generate(prefix="det_")
+    resp = await client.post("/events", json=events)
+    assert resp.status_code == 201
+
+    # Get a chain_id from the chains list
+    resp = await client.get("/chains")
+    assert resp.status_code == 200
+    chains = resp.json()["chains"]
+    assert len(chains) > 0
+    chain_id = chains[0]["chain_id"]
+
+    # Fetch single chain detail
+    resp = await client.get(f"/chains/{chain_id}")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["chain_id"] == chain_id
+    assert len(body["concatenatedrefs"]) > 0
+    assert len(body["timestamps"]) > 0
+    assert isinstance(body["context"], dict)
+    assert "complete" in body
+    assert "terminated" in body
+
+
 async def test_simulator(client):
 
     resp = await client.post("/events/simulation?num_intervals=1")

@@ -10,4 +10,5 @@ export const routes: Routes = [
   { path: 'realtime', component: PlaceholderComponent, data: { title: 'Real-time Dashboard' } },
   { path: 'models', component: PlaceholderComponent, data: { title: 'Models' } },
   { path: '', redirectTo: 'search', pathMatch: 'full' },
+  { path: '**', redirectTo: 'search' },
 ];

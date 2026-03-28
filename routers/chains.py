@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 
 from services.cache_service import CacheService
 from services.clickhouse_service import ClickHouseService
@@ -20,3 +20,16 @@ async def get_chains(
     else:
         chains = clickhouse_svc.query_chains_for_cache()
     return {"count": len(chains), "chains": chains}
+
+
+@router.get("/chains/{chain_id}",
+            summary="Get a single event chain by ID",
+            description="Returns the event chain with the given chain_id")
+async def get_chain(
+    chain_id: str,
+    clickhouse_svc: ClickHouseService = Depends(get_clickhouse_service),
+):
+    result = clickhouse_svc.query_chain_by_id(chain_id)
+    if not result:
+        raise HTTPException(status_code=404, detail="Chain not found")
+    return result

@@ -1,0 +1,33 @@
+<section class="chain-table" data-testid="chain-table">
+  <h2>Edge Latencies</h2>
+  <table>
+    <thead>
+      <tr>
+        <th>Source</th>
+        <th>Target</th>
+        <th>Source Time</th>
+        <th>Target Time</th>
+        <th>Latency (ms)</th>
+        <th class="avg-col">Avg (ms)</th>
+        <th class="avg-col">P50 (ms)</th>
+        <th class="avg-col">P95 (ms)</th>
+        <th class="avg-col">Samples</th>
+      </tr>
+    </thead>
+    <tbody>
+      @for (row of rows; track row.source + row.target) {
+        <tr>
+          <td>{{ row.source }}</td>
+          <td>{{ row.target }}</td>
+          <td class="ts">{{ row.sourceTimestamp }}</td>
+          <td class="ts">{{ row.targetTimestamp }}</td>
+          <td class="num">{{ row.deltaMs | number:'1.1-1' }}</td>
+          <td class="num avg-col">{{ row.avgMs !== null ? (row.avgMs | number:'1.1-1') : '-' }}</td>
+          <td class="num avg-col">{{ row.p50Ms !== null ? (row.p50Ms | number:'1.1-1') : '-' }}</td>
+          <td class="num avg-col">{{ row.p95Ms !== null ? (row.p95Ms | number:'1.1-1') : '-' }}</td>
+          <td class="num avg-col">{{ row.sampleCount ?? '-' }}</td>
+        </tr>
+      }
+    </tbody>
+  </table>
+</section>

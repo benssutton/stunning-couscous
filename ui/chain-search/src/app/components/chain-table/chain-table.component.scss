@@ -1,0 +1,49 @@
+.chain-table {
+  h2 {
+    font-size: 1.1rem;
+    font-weight: 600;
+    margin: 0 0 12px;
+    color: #1a1a2e;
+  }
+
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 0.85rem;
+  }
+
+  th, td {
+    padding: 8px 12px;
+    text-align: left;
+    border-bottom: 1px solid #e0e0e0;
+  }
+
+  th {
+    background: #f5f7fa;
+    font-weight: 600;
+    color: #555;
+    font-size: 0.8rem;
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
+  }
+
+  .ts {
+    font-family: 'Consolas', 'Monaco', monospace;
+    font-size: 0.8rem;
+    color: #666;
+  }
+
+  .num {
+    text-align: right;
+    font-family: 'Consolas', 'Monaco', monospace;
+  }
+
+  .avg-col {
+    color: #888;
+    opacity: 0.75;
+  }
+
+  tbody tr:hover {
+    background: #f8f9fb;
+  }
+}

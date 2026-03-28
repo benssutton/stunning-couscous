@@ -17,6 +17,9 @@ The problem domain, simulation, and prototype algorithms are detailed in `notebo
 - Router methods should not implement any logic other than calling the appropriate service(s).  All logic should be implemented in the service classes.
 - Services should not import other services.  Instead these should be passed via dependency injection.
 
+## Workflow Preferences
+- Keep changes focused and minimal. Avoid long codebase exploration phases—if the user points to a file or endpoint, start editing promptly.
+
 ## Development Environment
 - **Python**: `C:\Users\Ben\.conda\envs\p312` (conda, Python 3.12)
 - **Package manager**: conda (configured in `.vscode/settings.json`)

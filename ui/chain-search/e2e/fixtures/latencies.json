@@ -1,0 +1,11 @@
+[
+  {
+    "chain_id": "01JQTEST000000000000000001",
+    "latencies": [
+      { "source": "A", "target": "B", "delta_ms": 1200.0 },
+      { "source": "A", "target": "C", "delta_ms": 2500.0 },
+      { "source": "B", "target": "D", "delta_ms": 4600.0 },
+      { "source": "C", "target": "E", "delta_ms": 5600.0 }
+    ]
+  }
+]

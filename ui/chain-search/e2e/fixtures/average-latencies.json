@@ -1,0 +1,14 @@
+{
+  "chain_id": "01JQTEST000000000000000001",
+  "profile_id": 1,
+  "node_set": ["A", "B", "C", "D", "E"],
+  "matching_chains": 42,
+  "start": "2026-03-26T12:15:00.000",
+  "end": "",
+  "edges": [
+    { "source": "A", "target": "B", "avg_ms": 1150.5, "stddev_ms": 120.3, "min_ms": 900.0, "max_ms": 1500.0, "p5_ms": 950.0, "p50_ms": 1140.0, "p95_ms": 1400.0, "sample_count": 42 },
+    { "source": "A", "target": "C", "avg_ms": 2480.2, "stddev_ms": 200.1, "min_ms": 2000.0, "max_ms": 3100.0, "p5_ms": 2100.0, "p50_ms": 2450.0, "p95_ms": 2900.0, "sample_count": 42 },
+    { "source": "B", "target": "D", "avg_ms": 4550.8, "stddev_ms": 300.5, "min_ms": 3800.0, "max_ms": 5400.0, "p5_ms": 4000.0, "p50_ms": 4500.0, "p95_ms": 5200.0, "sample_count": 42 },
+    { "source": "C", "target": "E", "avg_ms": 5500.0, "stddev_ms": 250.0, "min_ms": 4900.0, "max_ms": 6200.0, "p5_ms": 5050.0, "p50_ms": 5480.0, "p95_ms": 5900.0, "sample_count": 42 }
+  ]
+}
