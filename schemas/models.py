@@ -1,4 +1,5 @@
 from datetime import datetime
+from typing import Literal
 
 from pydantic import BaseModel
 
@@ -148,3 +149,45 @@ class StateDetectorResponse(BaseModel):
     start: str
     end: str
     profiles: list[ProfileStateResult]
+
+
+# ---------------------------------------------------------------------------
+# Event counts models
+# ---------------------------------------------------------------------------
+
+class EventCountsRequest(BaseModel):
+    event_name: str
+    dates: list[str]          # YYYY-MM-DD
+    bucket_seconds: int       # 1–60
+    metric: Literal["count", "rolling_avg", "cumulative_sum"]
+
+class BucketPoint(BaseModel):
+    time: str                 # HH:MM:SS
+    value: float
+
+class DateSeries(BaseModel):
+    date: str
+    buckets: list[BucketPoint]
+
+class EventCountsResponse(BaseModel):
+    series: list[DateSeries]
+
+class EventNamesResponse(BaseModel):
+    names: list[str]
+
+
+# ---------------------------------------------------------------------------
+# Stats models
+# ---------------------------------------------------------------------------
+
+class TTestRequest(BaseModel):
+    series_a: list[float]
+    series_b: list[float]
+    alpha: float = 0.05
+
+class TTestResult(BaseModel):
+    t_statistic: float
+    p_value: float
+    degrees_of_freedom: int
+    significant: bool
+    alpha: float
