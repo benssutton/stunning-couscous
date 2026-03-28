@@ -27,11 +27,17 @@ from core.dependencies import (
     get_batch_writer,
     get_cache_service,
     get_clickhouse_service,
+    get_event_counts_service,
     get_latency_service,
     get_redis_service,
+    get_search_service,
     get_state_detector_service,
+    get_stats_service,
 )
+from services.event_counts_service import EventCountsService
 from services.redis_service import RedisService
+from services.search_service import SearchService
+from services.stats_service import StatsService
 
 
 def _ensure_index_sync(sync_r):
@@ -137,6 +143,7 @@ def clickhouse_service(clickhouse_container):
     svc.ensure_profiles_table()
     svc.ensure_classifier_model_table()
     svc.ensure_state_detector_model_table()
+    svc.ensure_event_refs_table()
     yield svc
     ch_client.close()
 
@@ -170,6 +177,9 @@ def _flush_redis_between_tests(request):
     ch_svc.client.command(
         "TRUNCATE TABLE IF EXISTS arestor.adjacency_edges"
     )
+    ch_svc.client.command(
+        "TRUNCATE TABLE IF EXISTS arestor.event_refs"
+    )
     yield
 
 
@@ -180,6 +190,7 @@ def client(redis_service, clickhouse_service, batch_writer):
     latency_service = LatencyService(clickhouse_service)
     state_detector_service = StateDetectorService(clickhouse_service)
     cache_service = CacheService(redis_service)
+    search_service = SearchService(clickhouse_service, redis_service)
     app.dependency_overrides[get_redis_service] = (
         lambda: redis_service
     )
@@ -200,6 +211,15 @@ def client(redis_service, clickhouse_service, batch_writer):
     )
     app.dependency_overrides[get_state_detector_service] = (
         lambda: state_detector_service
+    )
+    app.dependency_overrides[get_search_service] = (
+        lambda: search_service
+    )
+    app.dependency_overrides[get_stats_service] = (
+        lambda: StatsService()
+    )
+    app.dependency_overrides[get_event_counts_service] = (
+        lambda: EventCountsService()
     )
     transport = httpx.ASGITransport(app=app)
     c = httpx.AsyncClient(

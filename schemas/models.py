@@ -1,7 +1,7 @@
 from datetime import datetime
 from typing import Literal
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 # Events
 class Ref(BaseModel):
@@ -158,7 +158,7 @@ class StateDetectorResponse(BaseModel):
 class EventCountsRequest(BaseModel):
     event_name: str
     dates: list[str]          # YYYY-MM-DD
-    bucket_seconds: int       # 1–60
+    bucket_seconds: int = Field(ge=1, le=60)
     metric: Literal["count", "rolling_avg", "cumulative_sum"]
 
 class BucketPoint(BaseModel):
