@@ -55,7 +55,9 @@ def test_rolling_avg_metric():
     df = _make_df(rows)
     response = svc.build_response(df, "rolling_avg")
     buckets = response.series[0].buckets
-    # First 6 buckets have fewer than 7 observations — values will be null → 0.0
+    # First 6 buckets have fewer than 7 observations — fill_null → 0.0
+    for i in range(6):
+        assert buckets[i].value == 0.0, f"bucket {i} should be 0.0 (fill_null), got {buckets[i].value}"
     # Bucket 7 (index 6) is the first full window: mean of [1,2,3,4,5,6,7] = 4.0
     assert buckets[6].value == pytest.approx(4.0)
 

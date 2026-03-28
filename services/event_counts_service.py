@@ -12,6 +12,10 @@ class EventCountsService:
         if df.is_empty():
             return EventCountsResponse(series=[])
 
+        valid_metrics = {"count", "rolling_avg", "cumulative_sum"}
+        if metric not in valid_metrics:
+            raise ValueError(f"Unknown metric '{metric}'. Valid values: {sorted(valid_metrics)}")
+
         if metric == "cumulative_sum":
             df = df.with_columns(
                 pl.col("count").cast(pl.Float64).cum_sum().over("date").alias("value")
