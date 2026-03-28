@@ -1,0 +1,42 @@
+.top-nav {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 100;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  height: 44px;
+  padding: 0 20px;
+  background: #161b22;
+  border-bottom: 1px solid #30363d;
+}
+
+.brand {
+  color: #58a6ff;
+  font-weight: 700;
+  font-size: 14px;
+  margin-right: 12px;
+  user-select: none;
+}
+
+.nav-link {
+  color: #8b949e;
+  font-size: 13px;
+  padding: 6px 12px;
+  border-radius: 4px;
+  text-decoration: none;
+  transition: color 0.15s, background 0.15s;
+
+  &:hover {
+    color: #e6edf3;
+    background: #21262d;
+  }
+
+  &.active {
+    color: #e6edf3;
+    background: #21262d;
+    font-weight: 500;
+  }
+}

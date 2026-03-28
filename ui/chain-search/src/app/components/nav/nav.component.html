@@ -1,0 +1,10 @@
+<nav class="top-nav">
+  <span class="brand">Arestor</span>
+  @for (item of navItems; track item.route) {
+    <a
+      [routerLink]="item.route"
+      routerLinkActive="active"
+      class="nav-link"
+    >{{ item.label }}</a>
+  }
+</nav>
