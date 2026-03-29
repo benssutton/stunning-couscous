@@ -47,6 +47,7 @@ export class EventCountsComponent implements OnInit, OnDestroy, AfterViewInit {
     { label: 'Rolling Average', value: 'rolling_avg' },
     { label: 'Cumulative Sum', value: 'cumulative_sum' },
   ];
+  rollingWindow = 7;
 
   loading = false;
   error = '';
@@ -111,6 +112,7 @@ export class EventCountsComponent implements OnInit, OnDestroy, AfterViewInit {
       dates: this.selectedDates,
       bucket_seconds: this.bucketSeconds,
       metric: this.metric,
+      rolling_window: this.rollingWindow,
     }).pipe(catchError(err => { this.error = 'Failed to load event counts.'; this.loading = false; throw err; }), takeUntil(this.destroy$))
     .subscribe(response => {
       this.renderChart(response);

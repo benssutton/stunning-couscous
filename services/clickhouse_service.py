@@ -992,3 +992,103 @@ class ClickHouseService:
                 "count": [r[2] for r in rows],
             }
         )
+
+    def query_latency_timeseries(
+        self,
+        source_event: str,
+        target_event: str,
+        dates: list[str],
+        bucket_seconds: int,
+    ) -> pl.DataFrame:
+        """Return per-bucket latency statistics between two named events.
+
+        Computes delta_ms = target.timestamp - source.timestamp for all chains
+        containing both events on the given dates, then aggregates per time bucket.
+
+        Returns a Polars DataFrame with columns:
+            date (str), bucket_time (datetime), mean_ms, min_ms, max_ms,
+            p5_ms, p50_ms, p95_ms (all float), event_count (int)
+        """
+        result = self.client.query(
+            f"""
+            SELECT
+                toString(toDate(src.timestamp))                                     AS date,
+                toStartOfInterval(src.timestamp, INTERVAL {{bucket_seconds:UInt32}} SECOND) AS bucket_time,
+                avg(date_diff('millisecond', src.timestamp, tgt.timestamp))         AS mean_ms,
+                min(date_diff('millisecond', src.timestamp, tgt.timestamp))         AS min_ms,
+                max(date_diff('millisecond', src.timestamp, tgt.timestamp))         AS max_ms,
+                quantile(0.05)(date_diff('millisecond', src.timestamp, tgt.timestamp)) AS p5_ms,
+                quantile(0.50)(date_diff('millisecond', src.timestamp, tgt.timestamp)) AS p50_ms,
+                quantile(0.95)(date_diff('millisecond', src.timestamp, tgt.timestamp)) AS p95_ms,
+                count()                                                             AS event_count
+            FROM {self.database}.events AS src
+            INNER JOIN {self.database}.events AS tgt
+                ON tgt.chain_id = src.chain_id
+               AND tgt.event_name = {{target_event:String}}
+            WHERE src.event_name = {{source_event:String}}
+              AND toDate(src.timestamp) IN {{dates:Array(String)}}
+            GROUP BY date, bucket_time
+            ORDER BY date, bucket_time
+            """,
+            parameters={
+                "source_event": source_event,
+                "target_event": target_event,
+                "dates": dates,
+                "bucket_seconds": bucket_seconds,
+            },
+        )
+        rows = result.result_rows
+        if not rows:
+            return pl.DataFrame(schema={
+                "date": pl.Utf8,
+                "bucket_time": pl.Datetime,
+                "mean_ms": pl.Float64,
+                "min_ms": pl.Float64,
+                "max_ms": pl.Float64,
+                "p5_ms": pl.Float64,
+                "p50_ms": pl.Float64,
+                "p95_ms": pl.Float64,
+                "event_count": pl.Int64,
+            })
+        return pl.DataFrame({
+            "date":        [r[0] for r in rows],
+            "bucket_time": [r[1] for r in rows],
+            "mean_ms":     [float(r[2]) for r in rows],
+            "min_ms":      [float(r[3]) for r in rows],
+            "max_ms":      [float(r[4]) for r in rows],
+            "p5_ms":       [float(r[5]) for r in rows],
+            "p50_ms":      [float(r[6]) for r in rows],
+            "p95_ms":      [float(r[7]) for r in rows],
+            "event_count": [int(r[8]) for r in rows],
+        })
+
+    def query_latency_raw(
+        self,
+        source_event: str,
+        target_event: str,
+        dates: list[str],
+    ) -> list[dict]:
+        """Return all individual latency observations for T-test use.
+
+        Returns a list of dicts with keys: date (str), delta_ms (float).
+        """
+        result = self.client.query(
+            f"""
+            SELECT
+                toString(toDate(src.timestamp)) AS date,
+                date_diff('millisecond', src.timestamp, tgt.timestamp) AS delta_ms
+            FROM {self.database}.events AS src
+            INNER JOIN {self.database}.events AS tgt
+                ON tgt.chain_id = src.chain_id
+               AND tgt.event_name = {{target_event:String}}
+            WHERE src.event_name = {{source_event:String}}
+              AND toDate(src.timestamp) IN {{dates:Array(String)}}
+            ORDER BY date, src.timestamp
+            """,
+            parameters={
+                "source_event": source_event,
+                "target_event": target_event,
+                "dates": dates,
+            },
+        )
+        return [{"date": r[0], "delta_ms": float(r[1])} for r in result.result_rows]

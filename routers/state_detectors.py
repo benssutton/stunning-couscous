@@ -3,6 +3,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from schemas.models import StateDetectorRequest, StateDetectorResponse
 from services.state_detector_service import StateDetectorService
 from core.dependencies import get_state_detector_service
+from core.arrow_serializer import ProduceParams, get_produce_params, produce_response
 
 router = APIRouter()
 
@@ -32,8 +33,9 @@ async def train_state_detector(
 )
 async def get_state_detector(
     svc: StateDetectorService = Depends(get_state_detector_service),
+    produce: ProduceParams = Depends(get_produce_params),
 ):
     result = svc.get()
     if result is None:
         raise HTTPException(status_code=404, detail="No state detector model found")
-    return result
+    return produce_response(result, produce)

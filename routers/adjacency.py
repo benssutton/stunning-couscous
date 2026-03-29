@@ -5,6 +5,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from schemas.models import AdjacencyMatrixRequest, AdjacencyMatrixResponse
 from services.adjacency_service import AdjacencyService
 from core.dependencies import get_adjacency_service
+from core.arrow_serializer import ProduceParams, get_produce_params, produce_response
 
 router = APIRouter()
 
@@ -19,8 +20,9 @@ async def delete_adjacency_matrix(
             summary="Return all adjacency matrices")
 async def get_adjacency_matrix(
     adj_svc: AdjacencyService = Depends(get_adjacency_service),
+    produce: ProduceParams = Depends(get_produce_params),
 ):
-    return adj_svc.get()
+    return produce_response(adj_svc.get(), produce)
 
 @router.post("/adjacency_matrix",
              summary="Overwrite all adjacency matrices with those supplied")

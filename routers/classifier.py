@@ -5,6 +5,7 @@ from services.chain_classifier_service import ChainClassifierService
 from services.clickhouse_service import ClickHouseService
 from core.dependencies import get_clickhouse_service, get_redis_service
 from services.redis_service import RedisService
+from core.arrow_serializer import ProduceParams, get_produce_params, produce_response
 
 router = APIRouter()
 
@@ -13,14 +14,13 @@ router = APIRouter()
             summary="Returns the inferred event paths and details of the trained classifier")
 async def get_classifier(
     ch_svc: ClickHouseService = Depends(get_clickhouse_service),
+    produce: ProduceParams = Depends(get_produce_params),
 ):
     profiles = ch_svc.query_path_profiles()
     method_result = ch_svc.query_classifier_model_metadata()
     method_results = {method_result.method: method_result} if method_result else {}
-    return ClassifierResponse(
-        profiles=profiles,
-        method_results=method_results,
-    )
+    data = ClassifierResponse(profiles=profiles, method_results=method_results)
+    return produce_response(data, produce)
 
 @router.put("/classifier",
              summary="Re-trains the classifier to identify the expected event path for events received",

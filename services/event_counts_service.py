@@ -8,6 +8,7 @@ class EventCountsService:
         self,
         df: pl.DataFrame,
         metric: str,
+        rolling_window: int = 7,
     ) -> EventCountsResponse:
         if df.is_empty():
             return EventCountsResponse(series=[])
@@ -24,7 +25,7 @@ class EventCountsService:
             df = df.with_columns(
                 pl.col("count")
                 .cast(pl.Float64)
-                .rolling_mean(window_size=7)
+                .rolling_mean(window_size=rolling_window)
                 .over("date")
                 .fill_null(0.0)
                 .alias("value")

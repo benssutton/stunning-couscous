@@ -160,6 +160,7 @@ class EventCountsRequest(BaseModel):
     dates: list[str]          # YYYY-MM-DD
     bucket_seconds: int = Field(ge=1, le=60)
     metric: Literal["count", "rolling_avg", "cumulative_sum"]
+    rolling_window: int = Field(default=7, ge=2, le=120)
 
 class BucketPoint(BaseModel):
     time: str                 # HH:MM:SS
@@ -174,6 +175,40 @@ class EventCountsResponse(BaseModel):
 
 class EventNamesResponse(BaseModel):
     names: list[str]
+
+
+# ---------------------------------------------------------------------------
+# Latency time-series models
+# ---------------------------------------------------------------------------
+
+class LatencyTimeseriesRequest(BaseModel):
+    source_event: str
+    target_event: str
+    dates: list[str]           # YYYY-MM-DD, 1–2 dates
+    bucket_seconds: int = Field(ge=1, le=60)
+
+
+class LatencyBucket(BaseModel):
+    time: str                  # HH:MM:SS
+    mean_ms: float
+    min_ms: float
+    max_ms: float
+    p5_ms: float
+    p50_ms: float
+    p95_ms: float
+    event_count: int
+
+
+class LatencyDateSeries(BaseModel):
+    date: str
+    buckets: list[LatencyBucket]
+    raw_latencies: list[float]  # all delta_ms values for this date (used for T-test)
+
+
+class LatencyTimeseriesResponse(BaseModel):
+    source_event: str
+    target_event: str
+    series: list[LatencyDateSeries]
 
 
 # ---------------------------------------------------------------------------

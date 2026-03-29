@@ -71,6 +71,7 @@ export interface EventCountsRequest {
   dates: string[];
   bucket_seconds: number;
   metric: 'count' | 'rolling_avg' | 'cumulative_sum';
+  rolling_window?: number;
 }
 
 export interface EventCountsResponse {
@@ -90,4 +91,35 @@ export interface TTestResult {
   degrees_of_freedom: number;
   significant: boolean;
   alpha: number;
+}
+
+// Latency time-series
+export interface LatencyTimeseriesRequest {
+  source_event: string;
+  target_event: string;
+  dates: string[];
+  bucket_seconds: number;
+}
+
+export interface LatencyBucket {
+  time: string;       // HH:MM:SS
+  mean_ms: number;
+  min_ms: number;
+  max_ms: number;
+  p5_ms: number;
+  p50_ms: number;
+  p95_ms: number;
+  event_count: number;
+}
+
+export interface LatencyDateSeries {
+  date: string;
+  buckets: LatencyBucket[];
+  raw_latencies: number[];
+}
+
+export interface LatencyTimeseriesResponse {
+  source_event: string;
+  target_event: string;
+  series: LatencyDateSeries[];
 }

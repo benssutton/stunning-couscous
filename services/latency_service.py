@@ -5,6 +5,9 @@ from schemas.models import (
     ChainLatency,
     ChainLatencyResponse,
     EdgeLatencyStats,
+    LatencyBucket,
+    LatencyDateSeries,
+    LatencyTimeseriesResponse,
 )
 from services.clickhouse_service import ClickHouseService
 
@@ -106,4 +109,50 @@ class LatencyService:
             start=start.isoformat(timespec="milliseconds"),
             end=end.isoformat(timespec="milliseconds") if end else "",
             edges=edges,
+        )
+
+    def get_timeseries(
+        self,
+        source_event: str,
+        target_event: str,
+        dates: list[str],
+        bucket_seconds: int,
+    ) -> LatencyTimeseriesResponse:
+        """Return bucketed latency stats + raw latencies per date for the given event pair."""
+        bucketed_df = self.ch_svc.query_latency_timeseries(
+            source_event, target_event, dates, bucket_seconds
+        )
+        raw_rows = self.ch_svc.query_latency_raw(source_event, target_event, dates)
+
+        # Group raw latencies by date
+        raw_by_date: dict[str, list[float]] = {}
+        for row in raw_rows:
+            raw_by_date.setdefault(row["date"], []).append(row["delta_ms"])
+
+        series: list[LatencyDateSeries] = []
+        for date_str in sorted({r[0] for r in bucketed_df.iter_rows()} | set(raw_by_date.keys())):
+            date_df = bucketed_df.filter(bucketed_df["date"] == date_str).sort("bucket_time")
+            buckets = [
+                LatencyBucket(
+                    time=row["bucket_time"].strftime("%H:%M:%S"),
+                    mean_ms=row["mean_ms"],
+                    min_ms=row["min_ms"],
+                    max_ms=row["max_ms"],
+                    p5_ms=row["p5_ms"],
+                    p50_ms=row["p50_ms"],
+                    p95_ms=row["p95_ms"],
+                    event_count=row["event_count"],
+                )
+                for row in date_df.iter_rows(named=True)
+            ]
+            series.append(LatencyDateSeries(
+                date=date_str,
+                buckets=buckets,
+                raw_latencies=raw_by_date.get(date_str, []),
+            ))
+
+        return LatencyTimeseriesResponse(
+            source_event=source_event,
+            target_event=target_event,
+            series=series,
         )

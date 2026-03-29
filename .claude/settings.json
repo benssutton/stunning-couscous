@@ -3,7 +3,6 @@
     "allow": [
       "Bash(conda activate:*)",
       "Bash(conda run:*)",
-      "Bash(curl -s \"http://localhost:*/\" *)",
       "Bash(docker exec:*)",
       "Bash(python3:*)",
       "Bash(npm install:*)",
@@ -20,15 +19,22 @@
       "Bash(/c/Users/Ben/.conda/envs/p312/python.exe -m pytest --collect-only)",
       "Bash(/c/Users/benss/.conda/envs/p312/python.exe -m pytest tests/*.py -v)",
       "Bash(/c/Users/benss/.conda/envs/p312/python.exe -m pytest --collect-only)",
-      "Bash(/c/Users/Ben/.conda/envs/p312/python.exe -m pip install *",
-      "Bash(/c/Users/benss/.conda/envs/p312/python.exe -m pip install *",
       "Read(//c/Users/benss/.conda/envs/**)",
       "Bash(echo $PATH)",
       "Read(//c/Users/benss/.claude/plugins/cache/claude-plugins-official/superpowers/5.0.6/skills/brainstorming/**)",
       "Bash(C:Usersbenss.claudepluginscacheclaude-plugins-officialsuperpowers5.0.6scriptsstart-server.sh --project-dir c:/dev/stunning-couscous)",
       "Read(//c/Users/benss/.claude/plugins/cache/claude-plugins-official/superpowers/5.0.6/**)",
       "Bash(bash \"C:/Users/benss/.claude/plugins/cache/claude-plugins-official/superpowers/5.0.6/skills/brainstorming/scripts/start-server.sh\" --project-dir \"c:/dev/stunning-couscous\")",
-      "Bash(bash \"C:/Users/benss/.claude/plugins/cache/claude-plugins-official/superpowers/5.0.6/skills/brainstorming/scripts/start-server.sh\" --project-dir \"c:/dev/stunning-couscous\" --port 0)"
+      "Bash(bash \"C:/Users/benss/.claude/plugins/cache/claude-plugins-official/superpowers/5.0.6/skills/brainstorming/scripts/start-server.sh\" --project-dir \"c:/dev/stunning-couscous\" --port 0)",
+      "Bash(python -c \":*)",
+      "Bash(C:/Users/Ben/.conda/envs/p312/python.exe -c \":*)",
+      "Bash(mkdir -p \"d:/Python/dev/stunning-couscous/customer-requirements-workspace/skill-snapshot\")",
+      "Bash(cp \"d:/Python/dev/stunning-couscous/.claude/skills/customer-requirements/SKILL.md\" \"d:/Python/dev/stunning-couscous/customer-requirements-workspace/skill-snapshot/SKILL.md\")",
+      "Bash(mkdir -p \"d:/Python/dev/stunning-couscous/customer-requirements-workspace/iteration-2/eval-1-happy-path/with_skill/outputs\" \"d:/Python/dev/stunning-couscous/customer-requirements-workspace/iteration-2/eval-1-happy-path/old_skill/outputs\" \"d:/Python/dev/stunning-couscous/customer-requirements-workspace/iteration-2/eval-2-api-filter/with_skill/outputs\" \"d:/Python/dev/stunning-couscous/customer-requirements-workspace/iteration-2/eval-2-api-filter/old_skill/outputs\" \"d:/Python/dev/stunning-couscous/customer-requirements-workspace/iteration-2/eval-3-status-filter/with_skill/outputs\" \"d:/Python/dev/stunning-couscous/customer-requirements-workspace/iteration-2/eval-3-status-filter/old_skill/outputs\")",
+      "Bash(C:/Users/Ben/.conda/envs/p312/python.exe \"C:/Users/Ben/.claude/plugins/marketplaces/claude-plugins-official/plugins/skill-creator/skills/skill-creator/eval-viewer/generate_review.py\" \"d:/Python/dev/stunning-couscous/customer-requirements-workspace/iteration-2\" --skill-name \"customer-requirements\" --benchmark \"d:/Python/dev/stunning-couscous/customer-requirements-workspace/iteration-2/benchmark.json\" --previous-workspace \"d:/Python/dev/stunning-couscous/customer-requirements-workspace/iteration-1\" --static \"d:/Python/dev/stunning-couscous/customer-requirements-workspace/iteration-2/review.html\")",
+      "Bash(start \"\" \"d:/Python/dev/stunning-couscous/customer-requirements-workspace/iteration-2/review.html\")",
+      "Bash(/c/Users/Ben/.conda/envs/p312/python.exe -c \":*)",
+      "Bash(/c/Users/Ben/.conda/envs/p312/python.exe -m pip install openpyxl -q)"
     ]
   }
 }

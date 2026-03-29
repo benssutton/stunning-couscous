@@ -1,0 +1,23 @@
+{
+  "skill_name": "customer-requirements",
+  "evals": [
+    {
+      "id": 1,
+      "prompt": "I have a customer requirements file at customer_requirements.xlsx. Please process these requirements and create a development plan.",
+      "expected_output": "Reads both tabs, performs NER, audits exit criteria, produces feature summaries, excludes Done items, proposes prioritised delivery order, and enters planning mode with a development plan.",
+      "files": ["customer_requirements.xlsx"]
+    },
+    {
+      "id": 2,
+      "prompt": "Look at the customer requirements spreadsheet and tell me what needs to change for the API-related Must Do requirements.",
+      "expected_output": "Reads the spreadsheet, filters to Must Do + APIs Feature Category, identifies Revision scope, compares against existing codebase to determine the delta, and presents specific changes needed.",
+      "files": ["customer_requirements.xlsx"]
+    },
+    {
+      "id": 3,
+      "prompt": "Process customer_requirements.xlsx — I only care about the Must Do items that are still Open.",
+      "expected_output": "Reads the spreadsheet, correctly excludes Done items (refs 4 and 6), focuses on Open Must Do items, and produces a scoped plan covering only those requirements.",
+      "files": ["customer_requirements.xlsx"]
+    }
+  ]
+}

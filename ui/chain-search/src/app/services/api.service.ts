@@ -12,6 +12,8 @@ import {
   EventCountsResponse,
   TTestRequest,
   TTestResult,
+  LatencyTimeseriesRequest,
+  LatencyTimeseriesResponse,
 } from '../models/api.models';
 
 @Injectable({ providedIn: 'root' })
@@ -52,5 +54,9 @@ export class ApiService {
 
   runTTest(request: TTestRequest): Observable<TTestResult> {
     return this.http.post<TTestResult>('/stats/ttest', request);
+  }
+
+  getLatencyTimeseries(request: LatencyTimeseriesRequest): Observable<LatencyTimeseriesResponse> {
+    return this.http.post<LatencyTimeseriesResponse>('/latencies/timeseries', request);
   }
 }

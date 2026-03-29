@@ -2,6 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 
 from core.dependencies import get_search_service
 from services.search_service import SearchService
+from core.arrow_serializer import ProduceParams, get_produce_params, produce_response
 
 router = APIRouter(prefix="/search", tags=["search"])
 
@@ -15,9 +16,10 @@ async def autocomplete_refs(
     q: str = Query(..., min_length=2, description="Prefix to search"),
     limit: int = Query(20, ge=1, le=100),
     search_svc: SearchService = Depends(get_search_service),
+    produce: ProduceParams = Depends(get_produce_params),
 ):
     results = search_svc.autocomplete_ref_ids(q, limit)
-    return {"prefix": q, "results": results}
+    return produce_response({"prefix": q, "results": results}, produce)
 
 
 @router.get(
@@ -30,6 +32,7 @@ async def search_chains(
     ref_prefix: str | None = Query(None, min_length=2, description="Ref ID prefix"),
     limit: int = Query(100, ge=1, le=1000),
     search_svc: SearchService = Depends(get_search_service),
+    produce: ProduceParams = Depends(get_produce_params),
 ):
     if ref:
         chains = search_svc.search_chains_by_ref(ref, limit)
@@ -39,4 +42,4 @@ async def search_chains(
         raise HTTPException(
             status_code=422, detail="Provide 'ref' or 'ref_prefix' query parameter"
         )
-    return {"count": len(chains), "chain_ids": chains}
+    return produce_response({"count": len(chains), "chain_ids": chains}, produce)

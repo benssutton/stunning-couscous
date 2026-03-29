@@ -3,6 +3,7 @@ from fastapi import APIRouter, Depends
 from services.cache_service import CacheService
 from services.clickhouse_service import ClickHouseService
 from core.dependencies import get_cache_service, get_clickhouse_service
+from core.arrow_serializer import ProduceParams, get_produce_params, produce_response
 
 router = APIRouter()
 
@@ -11,9 +12,10 @@ router = APIRouter()
             summary="Get all event chain keys in the cache")
 async def get_event_chain_keys(
     cache_svc: CacheService = Depends(get_cache_service),
+    produce: ProduceParams = Depends(get_produce_params),
 ):
     keys = await cache_svc.get_all_chain_keys()
-    return {"count": len(keys), "keys": keys}
+    return produce_response({"count": len(keys), "keys": keys}, produce)
 
 
 @router.delete("/cache/event_chain_keys", 

@@ -9,6 +9,7 @@ from services.data_simulator import DataSimulator
 from services.event_counts_service import EventCountsService
 from core.dependencies import get_batch_writer, get_clickhouse_service, get_redis_service, get_event_counts_service
 from services.redis_service import RedisService
+from core.arrow_serializer import ProduceParams, get_produce_params, produce_response
 
 router = APIRouter()
 
@@ -79,9 +80,10 @@ async def receive_event(
             summary="List distinct event names")
 async def get_event_names(
     ch_svc: ClickHouseService = Depends(get_clickhouse_service),
+    produce: ProduceParams = Depends(get_produce_params),
 ) -> EventNamesResponse:
     names = ch_svc.get_distinct_event_names()
-    return EventNamesResponse(names=names)
+    return produce_response(EventNamesResponse(names=names), produce)
 
 
 @router.post("/events/counts",
@@ -93,4 +95,4 @@ async def get_event_counts(
     counts_svc: EventCountsService = Depends(get_event_counts_service),
 ) -> EventCountsResponse:
     df = ch_svc.get_event_counts(request.event_name, request.dates, request.bucket_seconds)
-    return counts_svc.build_response(df, request.metric)
+    return counts_svc.build_response(df, request.metric, request.rolling_window)
