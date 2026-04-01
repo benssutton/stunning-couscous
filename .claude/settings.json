@@ -34,7 +34,10 @@
       "Bash(C:/Users/Ben/.conda/envs/p312/python.exe \"C:/Users/Ben/.claude/plugins/marketplaces/claude-plugins-official/plugins/skill-creator/skills/skill-creator/eval-viewer/generate_review.py\" \"d:/Python/dev/stunning-couscous/customer-requirements-workspace/iteration-2\" --skill-name \"customer-requirements\" --benchmark \"d:/Python/dev/stunning-couscous/customer-requirements-workspace/iteration-2/benchmark.json\" --previous-workspace \"d:/Python/dev/stunning-couscous/customer-requirements-workspace/iteration-1\" --static \"d:/Python/dev/stunning-couscous/customer-requirements-workspace/iteration-2/review.html\")",
       "Bash(start \"\" \"d:/Python/dev/stunning-couscous/customer-requirements-workspace/iteration-2/review.html\")",
       "Bash(/c/Users/Ben/.conda/envs/p312/python.exe -c \":*)",
-      "Bash(/c/Users/Ben/.conda/envs/p312/python.exe -m pip install openpyxl -q)"
+      "Bash(/c/Users/Ben/.conda/envs/p312/python.exe -m pip install openpyxl -q)",
+      "Bash(\"/c/Users/Ben/.conda/envs/p312/python\" -c \":*)",
+      "Bash(\"/c/Users/Ben/.conda/envs/p312/python\":*)",
+      "Bash(/c/Users/Ben/.conda/envs/p312/python.exe -m pytest tests/test_endpoints.py -x -q)"
     ]
   }
 }

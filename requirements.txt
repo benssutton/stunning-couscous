@@ -10,7 +10,7 @@ redis
 clickhouse-connect
 
 # Data analysis and modelling dependencies
-ulid-py
+python-ulid
 numpy
 pandas
 polars

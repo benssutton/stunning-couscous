@@ -17,6 +17,14 @@ T_ALPHA = 75
 # ---------------------------------------------------------------------------
 
 
+class ParamPhase(BaseModel):
+    """A time-limited parameter override for transaction rate or node latency."""
+    duration: float   # seconds this phase lasts
+    mu: float
+    sigma: float
+    alpha: int
+
+
 class GraphNode(BaseModel):
     """A process node in the dependency graph."""
     mu: float
@@ -25,6 +33,7 @@ class GraphNode(BaseModel):
     dep: str
     refs: list[str | list[str]]
     context: list[str] = []
+    phases: list[ParamPhase] = []
 
 
 class ProfilePath(BaseModel):
@@ -45,6 +54,7 @@ class SimulatorConfig(BaseModel):
     """Complete simulator configuration: graph topology + profile paths."""
     graph: dict[str, GraphNode]
     profiles: list[ProfilePath]
+    transaction_phases: list[ParamPhase] = []
 
     @model_validator(mode="after")
     def _validate_profile_nodes(self) -> "SimulatorConfig":
@@ -115,12 +125,42 @@ class DataSimulator:
     # Private simulation steps
     # ------------------------------------------------------------------
 
+    @staticmethod
+    def _phase_index(phases: list[ParamPhase], t_seconds: float) -> int:
+        """Return the index of the active phase for a given elapsed time."""
+        cycle_length = sum(p.duration for p in phases)
+        t_mod = t_seconds % cycle_length
+        cumulative = 0.0
+        for i, phase in enumerate(phases):
+            cumulative += phase.duration
+            if t_mod < cumulative:
+                return i
+        return len(phases) - 1
+
+    @staticmethod
+    def _phase_at_time(phases: list[ParamPhase], t_seconds: float) -> ParamPhase:
+        """Return the active phase for a given elapsed time by cycling."""
+        cycle_length = sum(p.duration for p in phases)
+        t_mod = t_seconds % cycle_length
+        cumulative = 0.0
+        for phase in phases:
+            cumulative += phase.duration
+            if t_mod < cumulative:
+                return phase
+        return phases[-1]
+
     def _simulate_originating_events(self) -> np.ndarray:
         T = np.ndarray([0], dtype=np.datetime64)
+        phases = self.config.transaction_phases
         for i in range(self.num_intervals):
+            if phases:
+                phase = self._phase_at_time(phases, float(i))
+                mu, sigma, alpha = phase.mu, phase.sigma, phase.alpha
+            else:
+                mu, sigma, alpha = T_MU, T_SIGMA, T_ALPHA
             count = min(
-                int(stats.lognorm(s=T_SIGMA, scale=np.exp(T_MU)).rvs(1)[0]),
-                T_ALPHA,
+                int(stats.lognorm(s=sigma, scale=np.exp(mu)).rvs(1)[0]),
+                alpha,
             )
             if count > 0:
                 t_interval = (
@@ -141,17 +181,37 @@ class DataSimulator:
         self, T: np.ndarray, profile_indices: np.ndarray
     ) -> dict[str, np.ndarray]:
         num_obs = T.shape[0]
+        elapsed = (T - self._start_time).astype("timedelta64[ms]").astype(np.float64) / 1000.0
         timestamps: dict[str, np.ndarray] = {"T": T}
         for proc, node in self.config.graph.items():
-            latency = (
-                np.absolute(
-                    stats.norm(loc=node.mu, scale=node.sigma).rvs(num_obs).round(3)
+            dep_ts = timestamps[node.dep]
+            if node.phases:
+                result = np.empty(num_obs, dtype="datetime64[ms]")
+                phase_indices = np.array([
+                    self._phase_index(node.phases, t) for t in elapsed
+                ])
+                for pi in np.unique(phase_indices):
+                    mask = phase_indices == pi
+                    phase = node.phases[pi]
+                    n = mask.sum()
+                    latency = (
+                        np.absolute(stats.norm(loc=phase.mu, scale=phase.sigma).rvs(n).round(3))
+                        * 1000
+                    ).astype(np.timedelta64)
+                    result[mask] = (
+                        self._apply_service_rate(dep_ts[mask], phase.alpha) + latency
+                    )
+                timestamps[proc] = result
+            else:
+                latency = (
+                    np.absolute(
+                        stats.norm(loc=node.mu, scale=node.sigma).rvs(num_obs).round(3)
+                    )
+                    * 1000
+                ).astype(np.timedelta64)
+                timestamps[proc] = (
+                    self._apply_service_rate(dep_ts, node.alpha) + latency
                 )
-                * 1000
-            ).astype(np.timedelta64)
-            timestamps[proc] = (
-                self._apply_service_rate(timestamps[node.dep], node.alpha) + latency
-            )
         del timestamps["T"]
 
         # Apply profile masks: NaT for nodes not in the transaction's profile
