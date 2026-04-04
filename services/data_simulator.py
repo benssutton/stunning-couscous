@@ -63,14 +63,10 @@ class SimulatorConfig(BaseModel):
             invalid = profile.nodes - graph_nodes
             if invalid:
                 raise ValueError(
-                    f"Profile '{profile.name}' references unknown nodes: {invalid}"
+                    f"Profile {profile.name} references unknown nodes: {invalid}"
                 )
         return self
 
-
-# ---------------------------------------------------------------------------
-# Default configuration (equivalent to prior PROC_PARAMS behaviour)
-# ---------------------------------------------------------------------------
 
 DEFAULT_GRAPH: dict[str, GraphNode] = {
     "A": GraphNode(mu=0.5, sigma=0.5, alpha=60, dep="T", refs=["A"], context=["tea"]),
@@ -93,7 +89,6 @@ DEFAULT_PROFILES: list[ProfilePath] = [
 
 DEFAULT_CONFIG = SimulatorConfig(graph=DEFAULT_GRAPH, profiles=DEFAULT_PROFILES)
 
-
 class DataSimulator:
     """Generates simulated telemetry events."""
 
@@ -105,9 +100,7 @@ class DataSimulator:
     ) -> None:
         self.num_intervals = num_intervals
         self.config = config or DEFAULT_CONFIG
-        self._start_time = np.datetime64(
-            datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.000")
-        )
+        self._start_time = np.datetime64("2025-03-19T12:00:00.000")
         if seed is not None:
             np.random.seed(seed)
 
@@ -121,9 +114,6 @@ class DataSimulator:
         context = self._simulate_context(num_obs, profile_indices)
         return len(T), self._build_event_list(timestamps, trans_refs, context)
 
-    # ------------------------------------------------------------------
-    # Private simulation steps
-    # ------------------------------------------------------------------
 
     @staticmethod
     def _phase_index(phases: list[ParamPhase], t_seconds: float) -> int:
@@ -227,13 +217,14 @@ class DataSimulator:
     @staticmethod
     def _apply_service_rate(timeseries: np.ndarray, rate_per_second: int) -> np.ndarray:
         df = pd.DataFrame(timeseries, columns=["timeseries"]).sort_values("timeseries")
-        df["time_deltas"] = df["timeseries"].diff()
         min_delta = np.timedelta64(int(1 / rate_per_second * 1000), "ms")
-        df["rate_limited_deltas"] = np.maximum(
-            df["time_deltas"], np.full(df["time_deltas"].shape, min_delta)
-        )
-        df.loc[df["rate_limited_deltas"].isna(), "rate_limited_deltas"] = np.timedelta64(0, "ms")
-        df["rate_limited_ts"] = df["rate_limited_deltas"].cumsum() + df.iloc[0]["timeseries"]
+        arrivals = df["timeseries"].values
+        departures = np.empty_like(arrivals)
+        departures[0] = arrivals[0]
+        for i in range(1, len(arrivals)):
+            earliest = departures[i - 1] + min_delta
+            departures[i] = max(arrivals[i], earliest)
+        df["rate_limited_ts"] = departures
         return df.sort_index()["rate_limited_ts"].to_numpy()
 
     def _simulate_refs(self, num_obs: int, prefix: str = "") -> dict[str, list[list[dict]]]:

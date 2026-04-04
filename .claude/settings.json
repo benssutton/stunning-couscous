@@ -37,7 +37,18 @@
       "Bash(/c/Users/Ben/.conda/envs/p312/python.exe -m pip install openpyxl -q)",
       "Bash(\"/c/Users/Ben/.conda/envs/p312/python\" -c \":*)",
       "Bash(\"/c/Users/Ben/.conda/envs/p312/python\":*)",
-      "Bash(/c/Users/Ben/.conda/envs/p312/python.exe -m pytest tests/test_endpoints.py -x -q)"
+      "Bash(/c/Users/Ben/.conda/envs/p312/python.exe -m pytest tests/test_endpoints.py -x -q)",
+      "Bash(jupyter nbconvert:*)",
+      "Bash(C:/Users/Ben/.conda/envs/p312/python.exe -m pip show nbconvert)",
+      "Bash(C:/Users/Ben/.conda/envs/p312/python.exe -c \"import nbformat; from nbclient import NotebookClient; nb = nbformat.read\\('d:/Python/dev/stunning-couscous/notebooks/Event Chains Revisited.ipynb', as_version=4\\); client = NotebookClient\\(nb, timeout=300, kernel_name='python3'\\); client.execute\\(\\)\")",
+      "Bash(C:/Users/Ben/.conda/envs/p312/python.exe -m pip install nbclient)",
+      "Bash(C:/Users/Ben/.conda/envs/p312/python.exe -c ':*)",
+      "Bash(C:/Users/Ben/.conda/envs/p312/python.exe)",
+      "Bash(python -c ':*)",
+      "Read(//d/Python/**)",
+      "Read(//d/Python/dev/stunning-couscous/**)",
+      "Bash(python -c \"import json; nb=json.load\\(open\\('notebooks/Event Chains Revisited.ipynb'\\)\\); print\\(len\\(nb['cells']\\)\\); [print\\(f'Cell {i}: {c[\\\\\"cell_type\\\\\"]} — {c[\\\\\"source\\\\\"][0][:100] if c[\\\\\"source\\\\\"] else \\\\\"\\(empty\\)\\\\\"}'\\) for i,c in enumerate\\(nb['cells']\\)]\")",
+      "Bash(C:/Users/Ben/.conda/envs/p312/python.exe scripts/insert_cells.py)"
     ]
   }
 }
